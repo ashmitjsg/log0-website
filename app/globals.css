@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 :root {
-  --background: #030710;
+  --background: #020617;
   --color-primary: #7fc8ff;
   --color-secondary: #cce9ff;
   --color-text: #ffffff;
@@ -27,4 +27,36 @@ body {
   background: var(--background);
   color: var(--color-text);
   font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/*
+  Reusable teal glow orb — add to any div inside a `relative` parent.
+  Covers the full parent and fades out radially from center.
+  Customize position via `style` or Tailwind's `[background]` override.
+
+  Usage:
+    <section class="relative overflow-hidden">
+      <div class="glow-orb" />
+      ...content...
+    </section>
+*/
+@utility glow-orb {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    55.8% 55.49% at 50% 55.49%,
+    #264d4c 0%,
+    rgba(25, 48, 47, 0) 100%
+  );
+}
+
+/*
+  Hero section background — bottom-up teal glow into near-black.
+
+  Usage:
+    <section class="hero-bg">...</section>
+*/
+@utility hero-bg {
+  background: radial-gradient(60% 60% at 50% 110%, #264d4c 0%, #020617 100%);
 }
