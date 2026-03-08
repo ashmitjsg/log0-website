@@ -37,27 +37,49 @@ body {
     <nav class="container">...</nav>
     <section class="container">...</section>
 
-  Breakpoints (mirrors nightwatch.laravel.com):
-    mobile:  px ~1.15rem
-    md 768+: px 2rem
-    lg 1024+: px 4rem
+  Breakpoints:
+    base (< 640px): 1rem  (16px) — tight mobile, matches their [--padding-x:16px]
+    sm   (640px+):  2rem  (32px) — matches their max-lg:px-32 content padding
+    lg   (1024px+): 2rem  (32px) — desktop relies on max-width centering, not padding
 */
 @utility container {
   width: 100%;
   max-width: 1440px;
   margin-inline: auto;
-  padding-left: calc(env(safe-area-inset-left, 0rem) + 1.15rem);
-  padding-right: calc(env(safe-area-inset-right, 0rem) + 1.15rem);
+  padding-left: calc(env(safe-area-inset-left, 0rem) + 1rem);
+  padding-right: calc(env(safe-area-inset-right, 0rem) + 1rem);
 
-  @media (width >= 768px) {
-    padding-left: calc(env(safe-area-inset-left, 0rem) + 2rem);
-    padding-right: calc(env(safe-area-inset-right, 0rem) + 2rem);
+  @media (width >= 640px) {
+    padding-left: calc(env(safe-area-inset-left, 0rem) + 1.5rem);
+    padding-right: calc(env(safe-area-inset-right, 0rem) + 1.5rem);
   }
+}
 
-  @media (width >= 1024px) {
-    padding-left: calc(env(safe-area-inset-left, 0rem) + 4rem);
-    padding-right: calc(env(safe-area-inset-right, 0rem) + 4rem);
-  }
+/*
+  Hero grid lines — animated reveal on mount.
+  Lines start collapsed (scaleY/scaleX = 0) and expand when
+  the parent receives the `hero-revealed` class via React state.
+*/
+.hero-line {
+  transition: transform 0.6s ease;
+  pointer-events: none;
+}
+.hero-line-v {
+  transform: scaleY(0);
+  transform-origin: top center;
+}
+.hero-line-h {
+  transform: scaleX(0);
+  transform-origin: left center;
+}
+.hero-line-h-r {
+  transform: scaleX(0);
+  transform-origin: right center;
+}
+.hero-revealed .hero-line-v,
+.hero-revealed .hero-line-h,
+.hero-revealed .hero-line-h-r {
+  transform: scale(1);
 }
 
 /*

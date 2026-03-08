@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { motion } from "framer-motion";
 import Logo from "./Logo";
 import Button from "./ui/Button";
 import GitHubIcon from "./icons/GitHub";
@@ -10,6 +11,8 @@ const navLinks = [
   { label: "Documentation", href: links.docs },
   { label: "Blog", href: links.blog },
 ];
+
+const EASE = [0.25, 0.1, 0.25, 1] as const;
 
 export default function Navbar() {
   const [scrolled, setScrolled] = useState(false);
@@ -56,29 +59,42 @@ export default function Navbar() {
         <div className="container flex items-center justify-between py-4">
           {/* Left — logo + desktop nav */}
           <div className="flex items-center gap-10">
-            <a
+            {/* Logo — opacity + lift, no blur */}
+            <motion.a
               href="/"
               aria-label="log0 homepage"
               onClick={close}
               className="group"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6, ease: EASE, delay: 0.6 }}
             >
               <Logo
                 variant="line"
                 className="text-3xl text-white/70 transition-colors duration-200 group-hover:text-emerald-400"
               />
-            </a>
+            </motion.a>
 
             <nav aria-label="Main navigation">
               <ul className="hidden items-center gap-6 lg:flex" role="list">
-                {navLinks.map(({ label, href }) => (
-                  <li key={href}>
+                {navLinks.map(({ label, href }, i) => (
+                  <motion.li
+                    key={href}
+                    initial={{ opacity: 0, y: 12, filter: "blur(4px)" }}
+                    animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+                    transition={{
+                      duration: 0.6,
+                      ease: EASE,
+                      delay: 0.4 + (i + 1) * 0.05,
+                    }}
+                  >
                     <a
                       href={href}
                       className="rounded-sm text-base font-normal tracking-[-0.02em] text-neutral-400 transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[#020617]"
                     >
                       {label}
                     </a>
-                  </li>
+                  </motion.li>
                 ))}
               </ul>
             </nav>
@@ -86,7 +102,16 @@ export default function Navbar() {
 
           {/* Right — CTA + hamburger */}
           <div className="flex items-center gap-3">
-            <div className="hidden lg:block">
+            <motion.div
+              className="hidden lg:block"
+              initial={{ opacity: 0, y: 12, filter: "blur(4px)" }}
+              animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+              transition={{
+                duration: 0.6,
+                ease: EASE,
+                delay: 0.4 + (navLinks.length + 1) * 0.05,
+              }}
+            >
               <Button
                 variant="primary"
                 size="sm"
@@ -98,7 +123,7 @@ export default function Navbar() {
                 <GitHubIcon />
                 Contribute
               </Button>
-            </div>
+            </motion.div>
 
             {/* Hamburger — hidden on lg+ */}
             <button
