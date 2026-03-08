@@ -30,6 +30,37 @@ body {
 }
 
 /*
+  Global page container — consistent horizontal padding across all breakpoints.
+  Use on every top-level section, navbar, footer, etc.
+
+  Usage:
+    <nav class="container">...</nav>
+    <section class="container">...</section>
+
+  Breakpoints (mirrors nightwatch.laravel.com):
+    mobile:  px ~1.15rem
+    md 768+: px 2rem
+    lg 1024+: px 4rem
+*/
+@utility container {
+  width: 100%;
+  max-width: 1440px;
+  margin-inline: auto;
+  padding-left: calc(env(safe-area-inset-left, 0rem) + 1.15rem);
+  padding-right: calc(env(safe-area-inset-right, 0rem) + 1.15rem);
+
+  @media (width >= 768px) {
+    padding-left: calc(env(safe-area-inset-left, 0rem) + 2rem);
+    padding-right: calc(env(safe-area-inset-right, 0rem) + 2rem);
+  }
+
+  @media (width >= 1024px) {
+    padding-left: calc(env(safe-area-inset-left, 0rem) + 4rem);
+    padding-right: calc(env(safe-area-inset-right, 0rem) + 4rem);
+  }
+}
+
+/*
   Reusable teal glow orb — add to any div inside a `relative` parent.
   Covers the full parent and fades out radially from center.
   Customize position via `style` or Tailwind's `[background]` override.

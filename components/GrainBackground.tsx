@@ -17,7 +17,7 @@ const GrainBackground = () => {
 
       {/* Grain overlay — SVG feTurbulence with mix-blend-overlay */}
       <svg
-        className="pointer-events-none fixed inset-0 z-[99] h-screen mix-blend-overlay"
+        className="pointer-events-none fixed inset-0 z-99 h-screen mix-blend-overlay"
         xmlns="http://www.w3.org/2000/svg"
         width="100%"
         height="100%"
