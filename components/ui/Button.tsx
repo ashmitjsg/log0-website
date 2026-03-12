@@ -24,6 +24,7 @@ interface ButtonBaseProps {
   children: React.ReactNode;
 }
 
+// Polymorphic: pass `href` to render an <a>, omit it for a <button>.
 type ButtonProps = ButtonBaseProps &
   (
     | ({ href: string } & React.AnchorHTMLAttributes<HTMLAnchorElement>)
