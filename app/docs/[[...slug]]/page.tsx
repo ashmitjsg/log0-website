@@ -14,6 +14,8 @@ import { createRelativeLink } from "fumadocs-ui/mdx";
 import { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { links } from "@/lib/links";
+import { Feedback } from "@/components/docs/feedback/client";
+import { onPageFeedbackAction } from "@/lib/docs/github";
 
 export default async function Page(props: PageProps<"/docs/[[...slug]]">) {
   const params = await props.params;
@@ -45,6 +47,7 @@ export default async function Page(props: PageProps<"/docs/[[...slug]]">) {
           })}
         />
       </DocsBody>
+      <Feedback onSendAction={onPageFeedbackAction} />
     </DocsPage>
   );
 }

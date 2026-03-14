@@ -1,9 +1,16 @@
+import { FeedbackBlock } from "@/components/docs/feedback/client";
+import { onBlockFeedbackAction } from "@/lib/docs/github";
 import defaultMdxComponents from "fumadocs-ui/mdx";
 import { MDXComponents } from "mdx/types";
 
 export function getMDXComponents(components?: MDXComponents) {
   return {
     ...defaultMdxComponents,
+    FeedbackBlock: ({ children, ...rest }) => (
+      <FeedbackBlock {...rest} onSendAction={onBlockFeedbackAction}>
+        {children}
+      </FeedbackBlock>
+    ),
     ...components,
   } satisfies MDXComponents;
 }
