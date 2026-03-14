@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { RootProvider } from "fumadocs-ui/provider/next";
+import { Analytics } from "@vercel/analytics/next";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -31,6 +32,7 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} flex flex-col min-h-screen antialiased selection:bg-emerald-500 selection:text-neutral-950`}
       >
         <RootProvider>{children}</RootProvider>
+        <Analytics />
       </body>
     </html>
   );
