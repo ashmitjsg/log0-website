@@ -23,7 +23,7 @@ import { cn } from "../../../lib/cn";
 import { buttonVariants } from "../ui/button";
 import { type UIMessage, useChat, type UseChatHelpers } from "@ai-sdk/react";
 import { DefaultChatTransport, type Tool, type UIToolInvocation } from "ai";
-import { Markdown } from "../../markdown";
+import { Markdown } from "../../mdx/markdown";
 import { Presence } from "@radix-ui/react-presence";
 import type { SearchTool } from "../../../app/api/chat/route";
 

@@ -1,4 +1,5 @@
 import {
+  remarkMdxMermaid,
   remarkFeedbackBlock,
   RemarkFeedbackBlockOptions,
 } from "fumadocs-core/mdx-plugins";
@@ -19,6 +20,6 @@ export const docs = defineDocs({
 
 export default defineConfig({
   mdxOptions: {
-    remarkPlugins: [[remarkFeedbackBlock, feedbackOptions]],
+    remarkPlugins: [[remarkMdxMermaid, remarkFeedbackBlock, feedbackOptions]],
   },
 });

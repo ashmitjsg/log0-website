@@ -1,4 +1,4 @@
-import { getMDXComponents } from "@/components/mdx";
+import { getMDXComponents } from "@/components/mdx/mdx";
 import {
   MarkdownCopyButton,
   ViewOptionsPopover,
