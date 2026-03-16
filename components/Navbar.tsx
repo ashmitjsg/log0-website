@@ -9,7 +9,7 @@ import { links } from "@/lib/links";
 
 const navLinks = [
   { label: "Documentation", href: links.docs },
-  { label: "Blog", href: links.blog },
+  // { label: "Blog", href: links.blog },
 ];
 
 const EASE = [0.25, 0.1, 0.25, 1] as const;

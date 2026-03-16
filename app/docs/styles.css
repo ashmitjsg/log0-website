@@ -2,3 +2,12 @@
 @import "fumadocs-ui/css/neutral.css";
 @import "fumadocs-ui/css/preset.css";
 
+@theme {
+  --color-fd-primary: oklch(69.6% 0.17 162.48);
+  --color-fd-primary-foreground: hsl(0, 0%, 98%);
+}
+
+.dark {
+  --color-fd-primary: oklch(69.6% 0.17 162.48);
+  --color-fd-primary-foreground: hsl(0, 0%, 9%);
+}
