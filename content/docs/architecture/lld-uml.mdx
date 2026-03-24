@@ -12,7 +12,7 @@ This section documents the internal structure of each service - the classes, the
 | Service | Status | Notes |
 |---|---|---|
 | Ingestion Gateway | ✅ ~85% complete | REST API, Kafka producer, DLQ all working |
-| Normalization Service | ✅ ~70% complete | Normalization working; `FingerprintGenerator` is a stub |
+| Normalization Service | ✅ ~80% complete | Normalization and fingerprinting complete; producer reliability config pending |
 | Clustering Service | Planned | Not yet started |
 | Incident Service | Planned | Not yet started |
 | Notification Service | Planned | Not yet started |
@@ -179,18 +179,18 @@ classDiagram
         -normalizeMessage(message: String): String
         -extractAttributes(raw: RawLogEvent): Map~String, Object~
         -buildMessageTemplate(message: String): String
-        Note: extractAttributes currently returns empty HashMap\nbuildMessageTemplate delegates to FingerprintGenerator
+        Note: buildMessageTemplate delegates to FingerprintGenerator.buildMessageTemplate\nextractAttributes returns empty HashMap (placeholder)
     }
 
     class FingerprintGenerator {
         -Pattern UUID_PATTERN
         -Pattern NUMBER_PATTERN
         -Pattern IP_PATTERN
+        +buildMessageTemplate(message: String): String
         +generate(service: String, template: String, exceptionType: String, stackTrace: String): String
         -extractFirstFrame(stackTrace: String): String
         -sha256(input: String): String
         -safe(s: String): String
-        Note: ⚠️ STUB - methods not yet implemented\nUUID_PATTERN regex is malformed\nSee ROADMAP Phase 3
     }
 
     class NormalizedLogEvent {
@@ -206,7 +206,7 @@ classDiagram
         -Map~String, Object~ attributes
         -String traceId
         -String schemaVersion
-        Note: @Builder @Getter\nschemaVersion fixed at v1\nfingerprint and messageTemplate pending FingerprintGenerator
+        Note: @Builder @Getter\nschemaVersion fixed at v1
     }
 
     class RawLogEvent {
@@ -239,6 +239,14 @@ classDiagram
         Note: enable-auto-commit: false\nack-mode: MANUAL\ngroup: normalisation-service
     }
 
+    class KafkaProducerConfig {
+        +producerFactory(): ProducerFactory~String, NormalizedLogEvent~
+        +kafkaTemplate(): KafkaTemplate~String, NormalizedLogEvent~
+        +dlqProducerFactory(): ProducerFactory~String, DlqEvent~
+        +dlqKafkaTemplate(): KafkaTemplate~String, DlqEvent~
+        Note: acks=all, retries=3,\nenable.idempotence=true, linger.ms=5
+    }
+
     class RawLogEventDeserializer {
         -ObjectMapper objectMapper
         +deserialize(topic: String, data: byte[]): RawLogEvent
@@ -259,9 +267,8 @@ classDiagram
     LogNormalizer --> NormalizedLogEvent : produces
     NormalizedLogProducer --> NormalizedLogEvent
     KafkaConsumerConfig --> RawLogEventDeserializer
+    KafkaProducerConfig --> NormalizedLogEventSerializer
 ```
-
-**Current stub:** `FingerprintGenerator` contains only a malformed `UUID_PATTERN` regex and no methods. Until it is implemented, `NormalizedLogEvent.fingerprint` and `NormalizedLogEvent.messageTemplate` remain null. This blocks the Clustering Service, which groups by fingerprint. Implementing `FingerprintGenerator` is the next critical path item.
 
 ---
 
