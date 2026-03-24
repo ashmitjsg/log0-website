@@ -1,6 +1,6 @@
 # log0
 
-**log0 — an intelligent incident copilot that turns raw logs into actionable incidents.**
+**log0 - an intelligent incident copilot that turns raw logs into actionable incidents.**
 
 > From logs to incidents, automatically.
 

@@ -1,0 +1,425 @@
+---
+title: Flow Diagrams
+description: Runtime behavior of the log0 platform - traced through a concrete golden path scenario. Covers the end-to-end pipeline, normalization, fingerprinting, incident lifecycle, Slack assignment, multi-tenant request propagation, DLQ failure recovery, and AI summary generation.
+---
+
+## The Golden Path
+
+Before reading any diagram, understand the scenario they're all explaining.
+
+---
+
+**10:12 AM.** A new version of `payment-service` deploys to production. An environment variable is missing. Within seconds, every request to the payment processor throws:
+
+```
+ERROR  Connection timeout to payment-gateway after 30000ms
+       at com.acme.PaymentProcessor.charge(PaymentProcessor.java:142)
+       at com.acme.OrderService.placeOrder(OrderService.java:87)
+```
+
+Three pods. 800 requests per minute each. By 10:15 AM, **2,400 identical log lines** have been sent to log0's ingestion endpoint.
+
+---
+
+**What log0 does in those three minutes:**
+
+1. Each of the 2,400 HTTP requests hits the Ingestion Gateway, is validated, wrapped in a `RawLogEvent`, and published to Kafka `raw-logs`. The gateway returns `202 Accepted` immediately - it does not wait for the pipeline.
+
+2. The Normalization Service consumes each event from `raw-logs`. It normalizes the message, strips the dynamic port number from the timeout message, and generates a deterministic fingerprint:
+   ```
+   SHA-256("payment-service|Connection timeout to payment-gateway after <number>ms|ConnectionTimeoutException|PaymentProcessor.charge")
+   → fingerprint: "a3f8c2..."
+   ```
+
+3. The Clustering Service accumulates `NormalizedLogEvents` with fingerprint `a3f8c2...`. After the first occurrence threshold is crossed (configurable), it emits a single `IncidentEvent` - 2,400 logs become 1 incident.
+
+4. The Incident Service receives the `IncidentEvent`, writes a row to PostgreSQL with `status: NEW`, and asynchronously kicks off AI summarization. It then publishes a `NotificationEvent`.
+
+5. The Notification Service formats a Slack Block Kit message and posts it to `#incidents`:
+
+   ```
+   🚨 CRITICAL  payment-service / production
+   Connection timeout to payment-gateway after 30000ms
+   2,400 occurrences since 10:12 AM
+
+   AI Summary: The payment processor is failing to establish a
+   connection to the downstream payment gateway. The timeout
+   (30000ms) suggests the gateway is unreachable or overloaded.
+   Likely cause: missing PAYMENT_GATEWAY_URL environment variable
+   in the new deployment.
+
+   [ Assign Engineer ]  [ View Logs ]
+   ```
+
+6. An admin clicks "Assign Engineer", selects Rahul from the dropdown, and adds a note. Rahul gets a DM. The incident status transitions to `ASSIGNED`. The Slack message updates.
+
+**That is the complete system.** Every diagram below is a chapter of this story.
+
+---
+
+## End-to-End: Log to Incident
+
+This diagram traces the full pipeline from the `payment-service` HTTP call to the Slack notification. Follow it top to bottom.
+
+```mermaid
+flowchart TD
+    A[payment-service\nsends log] -->|POST /api/v1/logs\nX-TENANT-ID: acme-corp\nX-SERVICE-NAME: payment-service\nX-API-KEY: ak_xxxx| B
+
+    B[Ingestion Gateway :8080]
+    B --> B1{Validate headers\nX-TENANT-ID, X-SERVICE-NAME\nX-ENVIRONMENT, X-API-KEY}
+    B1 -->|Missing or blank| E1[400 Bad Request]
+    B1 -->|All present| B2{Validate payload\n@Valid on LogIngestionRequest}
+    B2 -->|Invalid fields\nlevel > 20 chars\nmessage > 10K chars| E2[400 Validation Error]
+    B2 -->|Valid| B3[Build RawLogEvent\neventId: UUID.randomUUID\nreceivedAt: Instant.now]
+
+    B3 --> B4{Publish to Kafka\ntopic: raw-logs\nkey: tenantId}
+    B4 -->|Success| B5[Return 202 Accepted\neventId in response]
+    B4 -->|Kafka unavailable| B6[Publish to raw-logs-dlq\nReturn 202 Accepted\npipeline is async]
+
+    B4 --> C[Normalization Service :8081\nConsumes raw-logs\ngroup: normalisation-service]
+    C --> C1[LogNormalizer.normalize]
+    C1 --> C2[resolveTimestamp\nnormalizeLevel uppercase\nnormalizeMessage trim]
+    C2 --> C3[FingerprintGenerator\nbuildMessageTemplate - strip numbers IPs UUIDs\nSHA-256 hash of service+template+exception+stackFrame]
+    C3 --> C4[Build NormalizedLogEvent\nfingerprint + messageTemplate + schemaVersion: v1]
+    C4 --> C5{Publish to\nnormalized-logs}
+    C5 -->|Success| C6[ACK Kafka offset]
+    C5 -->|Failure| C7[Publish to DLQ\nthen ACK offset\npartition never blocks]
+    C4 --> CH[(Insert to ClickHouse\nlog_events table)]
+
+    C5 --> D[Clustering Service :8082\nConsumes normalized-logs]
+    D --> D1{fingerprint seen\nin time window?}
+    D1 -->|Yes| D2[Increment occurrence count\nupdate last_seen_at]
+    D1 -->|No| D3[Start new cluster\nfor this fingerprint]
+    D2 --> D4{Occurrence count\nexceeds threshold?}
+    D3 --> D4
+    D4 -->|Below threshold| D5[Accumulate\nwait for more events]
+    D4 -->|Threshold exceeded| D6[Emit IncidentEvent\nPublish to incident-events]
+
+    D6 --> E[Incident Service :8083\nConsumes incident-events]
+    E --> E1b{Incident exists for\nthis fingerprint + tenant?}
+    E1b -->|Yes - reoccurrence| E2b[Update last_seen_at\nIncrement occurrence_count]
+    E1b -->|No - new pattern| E3b[INSERT incident\nstatus: NEW\nPostgreSQL]
+    E3b --> E4b[Trigger AI Summary\nasync - does not block notification]
+    E3b --> E5b[Publish NotificationEvent\nto notification-events]
+
+    E5b --> F[Notification Service :8084\nConsumes notification-events]
+    F --> F1[Format Slack Block Kit message\nwith AI summary if ready]
+    F1 --> F2[POST to Slack channel\nwith Assign + View Logs buttons]
+    F2 --> F3[Optional: WhatsApp alert\nto on-call engineer]
+```
+
+**Key observations:**
+
+- The ingestion gateway always returns `202 Accepted` - even on Kafka failure. The pipeline is async by design. The client gets acknowledgment that the event was received, not that it was processed.
+- ClickHouse receives every normalized log, not just incidents. This is what powers historical queries and the AI summary prompt.
+- The Clustering Service is a stateful accumulator. Its time-window state is stored in Redis, making it horizontally scalable (multiple instances share the same window state).
+
+---
+
+## Log Normalization Detail
+
+Normalization is where raw, inconsistent log text is transformed into a structured, query-ready event. The most important output is the `fingerprint` - the key that makes deduplication possible.
+
+### Why Templating Works
+
+Two log lines that differ only in dynamic values represent the same error:
+
+```
+"Connection timeout to payment-gateway after 30000ms"
+"Connection timeout to payment-gateway after 28514ms"
+"Connection timeout to payment-gateway after 31003ms"
+```
+
+After templating:
+
+```
+"Connection timeout to payment-gateway after <number>ms"
+```
+
+All three produce the same `messageTemplate`, and therefore the same `fingerprint`. 2,400 distinct log messages collapse to 1 incident.
+
+```mermaid
+flowchart TD
+    A[RawLogEvent from Kafka] --> B[RawLogConsumer.consume\nwith Acknowledgment ack]
+    B --> C[LogNormalizer.normalize]
+
+    C --> D[resolveTimestamp]
+    D --> D1{logTimestamp\nnot null?}
+    D1 -->|Yes - use log time| D2[timestamp = logTimestamp]
+    D1 -->|No - use ingestion time| D3[timestamp = receivedAt\nfallback to Instant.now]
+
+    C --> E[normalizeLevel]
+    E --> E1{level not null\nand not blank?}
+    E1 -->|Yes| E2[level = level.trim.toUpperCase]
+    E1 -->|No| E3[level = INFO]
+
+    C --> F[normalizeMessage]
+    F --> F1{message not null?}
+    F1 -->|Yes| F2[message = message.trim]
+    F1 -->|No| F3[message = empty string]
+
+    C --> G[buildMessageTemplate]
+    G --> G1[Replace \d+ → number]
+    G1 --> G2["Replace \d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3} → ip"]
+    G2 --> G3[Replace UUID pattern → uuid]
+    G3 --> G4[messageTemplate]
+
+    C --> H[FingerprintGenerator.generate]
+    H --> H1[extractFirstFrame from stackTrace\nstrip line numbers]
+    H1 --> H2["Concatenate:\nservice + | + template + | + exceptionType + | + firstFrame"]
+    H2 --> H3[SHA-256 hash]
+    H3 --> H4[fingerprint - 64-char hex string]
+
+    D2 --> I[Build NormalizedLogEvent]
+    D3 --> I
+    E2 --> I
+    E3 --> I
+    F2 --> I
+    F3 --> I
+    G4 --> I
+    H4 --> I
+
+    I --> J[NormalizedLogProducer\nPublish to normalized-logs\nkey: tenantId]
+    J --> K{Kafka publish\nsucceeded?}
+    K -->|Yes| L[ack.acknowledge\ncommit offset]
+    K -->|No| M[DlqProducer.publish\nwrap in DlqEvent]
+    M --> L
+```
+
+**The fingerprint formula:**
+
+```
+fingerprint = SHA-256(
+    serviceName + "|" +
+    messageTemplate + "|" +
+    exceptionType + "|" +    ← nullable, empty string if none
+    firstStackFrame          ← first line of stack trace, line number stripped
+)
+```
+
+Stripping line numbers from the stack frame means that a refactor which shifts `PaymentProcessor.java` from line 142 to line 145 does not create a new incident. The error is the same error.
+
+---
+
+## Incident Lifecycle State Machine
+
+Every incident moves through exactly four states. Transitions are enforced by `IncidentStateMachine` - invalid transitions are rejected before they touch the database.
+
+```mermaid
+stateDiagram-v2
+    [*] --> NEW : Clustering threshold exceeded\nIncidentService.createOrUpdateIncident
+
+    NEW --> ASSIGNED : Admin assigns engineer\nvia Slack modal or web UI
+
+    ASSIGNED --> ACKNOWLEDGED : Engineer acknowledges\nvia Slack button or web UI
+
+    ACKNOWLEDGED --> RESOLVED : Engineer resolves\nvia web UI
+
+    RESOLVED --> NEW : Same fingerprint reoccurs\n(configurable: reopen or create new)
+
+    ASSIGNED --> ASSIGNED : Reassigned to different engineer
+
+    NEW --> RESOLVED : Auto-resolve if no new logs\nin configured window (optional)
+
+    note right of NEW
+        On entry:
+        - Slack alert sent to channel
+        - AI summary generated async
+        - WhatsApp notification (if configured)
+    end note
+
+    note right of ASSIGNED
+        On entry:
+        - DM sent to assigned engineer
+        - WhatsApp to engineer (if configured)
+        - Slack channel message updated
+        - incident_assignment row inserted
+        - incident_state_history row inserted
+    end note
+
+    note right of ACKNOWLEDGED
+        On entry:
+        - Slack channel message updated
+        - SLA timer starts
+        - incident_state_history row inserted
+    end note
+
+    note right of RESOLVED
+        On entry:
+        - Slack channel message updated
+        - resolved_at timestamp set
+        - incident_state_history row inserted
+        - usage_metrics updated
+    end note
+```
+
+**Every transition is recorded.** The `incident_state_history` table receives a row for each state change, capturing who made the change and when. This gives a complete audit trail for post-incident review.
+
+**Re-opening:** When a resolved incident's fingerprint appears again in new logs, the Clustering Service emits a new `IncidentEvent`. The Incident Service checks whether an open incident already exists for that fingerprint. If one does (e.g., someone resolved too early), `occurrence_count` is incremented and `last_seen_at` is updated. If none exists, a new incident is created from `NEW`.
+
+---
+
+## Slack Assignment Flow
+
+The Slack integration is bidirectional. log0 posts alerts *to* Slack, and Slack sends interaction events *back* to log0. This sequence diagram shows an admin assigning an incident to an engineer entirely within Slack.
+
+```mermaid
+sequenceDiagram
+    participant Admin
+    participant Slack
+    participant NotifService as Notification Service
+    participant IncidentService as Incident Service
+    participant PostgreSQL
+    participant Engineer
+
+    Note over Admin,Slack: 🚨 Incident alert arrives in #incidents channel
+
+    Admin->>Slack: Sees CRITICAL alert\nClicks "Assign Engineer"
+    Slack->>NotifService: POST /api/v1/slack/interactions\n{type: "block_actions"\naction_id: "assign_engineer"\nincident_id: "inc_xxx"}
+    NotifService->>IncidentService: GET /api/v1/users?tenantId=acme-corp&role=ENGINEER
+    IncidentService->>PostgreSQL: SELECT user_id, name, slack_user_id\nFROM users\nWHERE tenant_id = 'acme-corp'\nAND role = 'ENGINEER'
+    PostgreSQL-->>IncidentService: [{name: "Rahul", slackUserId: "U123"}\n{name: "Priya", slackUserId: "U456"}]
+    IncidentService-->>NotifService: engineer list
+    NotifService->>Slack: views.open - engineer selection modal\nwith dropdown + notes field
+    Slack-->>Admin: Modal opens with engineer list
+
+    Admin->>Slack: Selects "Rahul" from dropdown\nNote: "Check gateway logs - looks like env var missing"\nClicks Submit
+    Slack->>NotifService: POST /api/v1/slack/interactions\n{type: "view_submission"\nselected_user: "U123"\nnote: "Check gateway logs..."}
+    NotifService->>IncidentService: PATCH /api/v1/incidents/inc_xxx/assign\n{assignedTo: "U123", note: "..."}
+    IncidentService->>PostgreSQL: UPDATE incidents SET status='ASSIGNED'\nINSERT incident_assignments (assigned_to, assigned_by, notes)\nINSERT incident_state_history (NEW → ASSIGNED)
+    PostgreSQL-->>IncidentService: OK
+    IncidentService-->>NotifService: incident updated
+
+    NotifService->>Slack: chat.update - update channel message\n"👤 Assigned to: @Rahul at 10:16 IST"
+    NotifService->>Slack: chat.postMessage - DM to Rahul\n"🚨 You've been assigned: payment-service / CRITICAL"
+    NotifService->>Engineer: Optional WhatsApp\n"Payment incident assigned to you - check Slack"
+
+    Note over Engineer,Slack: Engineer investigates, then acknowledges
+
+    Engineer->>Slack: Clicks "Acknowledge" button on incident message
+    Slack->>NotifService: POST /api/v1/slack/interactions\n{type: "block_actions"\naction_id: "acknowledge"\nincident_id: "inc_xxx"}
+    NotifService->>IncidentService: PATCH /api/v1/incidents/inc_xxx/acknowledge
+    IncidentService->>PostgreSQL: UPDATE incidents SET status='ACKNOWLEDGED'\nINSERT incident_state_history (ASSIGNED → ACKNOWLEDGED)
+    NotifService->>Slack: chat.update - "✅ Acknowledged by @Rahul at 10:19 IST"
+```
+
+The entire assignment workflow - from alert to acknowledgment - happens without leaving Slack. Engineers do not need access to the web UI to handle incidents. The web UI exists for search, filtering, historical review, and bulk operations.
+
+---
+
+## Multi-Tenant Request Propagation
+
+This sequence shows exactly how tenant context is extracted from the HTTP request and carried through to Kafka - tracing the internal call chain inside the Ingestion Gateway.
+
+```mermaid
+sequenceDiagram
+    participant SVC as payment-service
+    participant CTL as LogIngestionController
+    participant RHE as RequestHeaderExtractor
+    participant RC as RequestContext
+    participant SVC2 as LogIngestionServiceImpl
+    participant PROD as RawLogProducer
+    participant K as Kafka (raw-logs)
+
+    SVC->>CTL: POST /api/v1/logs\nHeaders:\n  X-TENANT-ID: acme-corp\n  X-SERVICE-NAME: payment-service\n  X-ENVIRONMENT: production\n  X-API-KEY: ak_live_xxxx\nBody: {timestamp, level, message, trace}
+
+    CTL->>RHE: extractContext(HttpServletRequest)
+    RHE->>RHE: requireHeader("X-TENANT-ID") → "acme-corp"\nrequireHeader("X-SERVICE-NAME") → "payment-service"\nrequireHeader("X-ENVIRONMENT") → "production"\nrequireHeader("X-API-KEY") → "ak_live_xxxx"
+    RHE->>RC: new RequestContext(\n  tenantId = "acme-corp"\n  serviceName = "payment-service"\n  environment = "production"\n  apiKey = "ak_live_xxxx"\n)
+    RC-->>CTL: RequestContext
+
+    CTL->>SVC2: ingest(logRequest, context)
+    SVC2->>SVC2: RawLogEvent.builder()\n  .eventId(UUID.randomUUID().toString())\n  .tenantId("acme-corp")\n  .serviceName("payment-service")\n  .environment("production")\n  .receivedAt(Instant.now())\n  .logTimestamp(request.getTimestamp())\n  .level("ERROR")\n  .message("Connection timeout...")\n  .trace("at PaymentProcessor.charge:142")\n  .build()
+
+    SVC2->>PROD: publish(rawLogEvent)
+    PROD->>K: kafkaTemplate.send(\n  topic = "raw-logs"\n  key = "acme-corp"       ← tenantId as Kafka key\n  value = rawLogEvent\n)
+    K-->>PROD: RecordMetadata (async callback)
+    PROD-->>SVC2: void
+    SVC2-->>CTL: void
+    CTL-->>SVC: HTTP 202 Accepted\n{"eventId": "a1b2c3..."}
+```
+
+The `RequestHeaderExtractor.requireHeader()` method throws an `IllegalArgumentException` if any required header is missing or blank. The `GlobalExceptionHandler` catches this and returns a `400 Bad Request` with a structured error body. Tenant context is never assumed - it must be explicitly supplied on every request.
+
+---
+
+## DLQ: Failure Path and Recovery
+
+The Dead Letter Queue pattern ensures that a processing failure never stalls the Kafka partition. This diagram shows both failure scenarios and how failed events can be replayed.
+
+```mermaid
+flowchart LR
+    subgraph Happy["Happy Path"]
+        E1[RawLogEvent] --> N1[Normalization Service]
+        N1 --> NLE[NormalizedLogEvent]
+        NLE --> T2[("normalized-logs")]
+        T2 --> ACK1[ack.acknowledge\nOffset committed]
+    end
+
+    subgraph NormFail["Normalization Failure"]
+        E2[RawLogEvent] --> N2[Normalization Service]
+        N2 -->|Exception thrown\ne.g. malformed message\nor fingerprint error| DLQ_BUILD["Build DlqEvent:\n  originalEvent: RawLogEvent\n  errorMessage: ex.getMessage()\n  failedAt: normalization-service\n  failedAtTs: Instant.now()"]
+        DLQ_BUILD --> T_DLQ[("raw-logs-dlq")]
+        T_DLQ --> ACK2[ack.acknowledge\nPartition never blocks]
+    end
+
+    subgraph IngestFail["Ingestion Failure"]
+        REQ[HTTP Request] --> IG[Ingestion Gateway]
+        IG -->|Kafka broker\nunavailable| DLQ_IG["Build DlqEvent:\n  originalEvent: RawLogEvent\n  failedAt: ingestion-gateway\n  failedAtTs: Instant.now()"]
+        DLQ_IG --> T_DLQ
+        IG -->|Still return| HTTP_202[HTTP 202 Accepted\nClient not impacted]
+    end
+
+    subgraph Recovery["DLQ Monitoring and Replay"]
+        T_DLQ --> MON[DLQ Monitor Service\nplanned]
+        MON --> ALERT[Ops alert:\nDLQ non-empty]
+        MON --> REPLAY[Manual replay\nafter bug fix]
+    end
+```
+
+**The invariant:** The Kafka offset is *always* acknowledged, whether the message was processed successfully or forwarded to the DLQ. This guarantees that a bad message - a null field, a serialization failure, an unexpected format - does not halt processing for all messages behind it on the same partition.
+
+**DLQ contents:** The `DlqEvent` wraps the full original event, so nothing is lost. When the underlying bug is fixed, failed messages can be replayed by re-publishing `originalEvent` to the head topic.
+
+**Current gap:** The DLQ monitor service is not yet implemented. Today, DLQ activity is visible via Kafka consumer group metrics. The planned monitor will alert on non-empty DLQ lag and surface failed events in the web UI.
+
+---
+
+## AI Summary Generation
+
+AI summarization is asynchronous and non-blocking. The incident is created and the notification is sent *before* the summary is ready. When the summary is written, the incident record is updated and the Slack message is edited to include it.
+
+```mermaid
+sequenceDiagram
+    participant IS as Incident Service
+    participant AIS as AISummaryService
+    participant Cache as Redis
+    participant CH as ClickHouse
+    participant LLM as Azure OpenAI (GPT-4o)
+    participant PG as PostgreSQL
+
+    IS->>AIS: generateSummary(incident)\n[async - does not block notification]
+
+    AIS->>Cache: GET summary:incident:{incidentId}
+    Cache-->>AIS: MISS
+
+    AIS->>CH: SELECT message, COUNT(*) as cnt\nFROM log_events\nWHERE fingerprint = 'a3f8c2...'\nAND tenant_id = 'acme-corp'\nGROUP BY message\nORDER BY cnt DESC\nLIMIT 10
+    CH-->>AIS: top 10 most frequent messages\nwith occurrence counts
+
+    AIS->>AIS: Build prompt:\n  System: "You are an SRE assistant. Summarize\n  this incident concisely for an on-call engineer."\n  User: "Service: payment-service\n  Environment: production\n  Occurrences: 2400\n  Time range: 10:12 – 10:15 IST\n  Top errors:\n  - Connection timeout to payment-gateway after 30000ms (1847)\n  - Connection timeout to payment-gateway after 28514ms (312)\n  - Connection timeout to payment-gateway after 31003ms (241)"
+
+    AIS->>LLM: POST /chat/completions\n{model: "gpt-4o"\ntemperature: 0.2\nmax_tokens: 300}
+    LLM-->>AIS: "The payment processor is failing to establish a\nconnection to the downstream payment gateway.\nThe consistent timeout (30000ms) across 2,400\nrequests suggests the gateway is unreachable...\nLikely cause: misconfigured PAYMENT_GATEWAY_URL\nin the new deployment."
+
+    AIS->>Cache: SET summary:incident:{incidentId}\nTTL = 1 hour
+    AIS->>PG: UPDATE incidents\nSET ai_summary = '...'\nWHERE incident_id = 'inc_xxx'
+    AIS-->>IS: summary stored
+
+    Note over IS: Notification Service will edit\nthe Slack message to include\nthe summary once stored
+```
+
+**Why `temperature: 0.2`?** Low temperature produces deterministic, factual summaries. High temperature produces creative writing. An SRE reading a Slack alert at 2 AM needs the former.
+
+**Why cache the summary in Redis?** The summary is expensive to generate (LLM API call + ClickHouse query). If the same incident is re-opened or if the API is called multiple times, the cached result is returned instantly. The 1-hour TTL is a balance between freshness (the incident may accumulate new messages) and cost.
+
+**What the query does:** The ClickHouse query fetches the ten most common distinct messages for this fingerprint. These are the raw log messages, not templated - they give the LLM specific text to work with, including the actual timeout durations, which may hint at the cause.

@@ -36,7 +36,7 @@ export default function HeroGrid() {
       aria-hidden="true"
     >
       {/*
-       * HORIZONTAL LINE 1 — full-viewport width
+       * HORIZONTAL LINE 1 - full-viewport width
        * Mobile: top 557.5px  |  lg (≥1024px): top 683.5px
        */}
       <div
@@ -45,7 +45,7 @@ export default function HeroGrid() {
       />
 
       {/*
-       * cmw-1353 CONTAINER — top 75px, height 1096px, 16px side-padding
+       * cmw-1353 CONTAINER - top 75px, height 1096px, 16px side-padding
        * Shrinks responsively when viewport < 1353+32px (stays 16px from each edge).
        * Contains:
        *   • 1 pair of vertical lines  (always visible, delay-500)
@@ -58,22 +58,22 @@ export default function HeroGrid() {
           left: "max(16px, calc(50% - 676.5px))",
         }}
       >
-        {/* cmw-1353 — left vertical */}
+        {/* cmw-1353 - left vertical */}
         <div
           className="hero-line hero-line-v absolute top-0 left-0 h-full w-px"
           style={{ background: grad(75), transitionDelay: "500ms" }}
         />
-        {/* cmw-1353 — right vertical */}
+        {/* cmw-1353 - right vertical */}
         <div
           className="hero-line hero-line-v absolute top-0 right-0 h-full w-px"
           style={{ background: grad(75), transitionDelay: "500ms" }}
         />
-        {/* cmw-1353 — H bracket LEFT at 224.5px (xl+ only) */}
+        {/* cmw-1353 - H bracket LEFT at 224.5px (xl+ only) */}
         <div
           className="hero-line hero-line-h absolute left-0 h-px w-84.25 top-[224.5px] max-xl:hidden"
           style={{ background: C4, transitionDelay: "100ms" }}
         />
-        {/* cmw-1353 — H bracket RIGHT at 224.5px (xl+ only) */}
+        {/* cmw-1353 - H bracket RIGHT at 224.5px (xl+ only) */}
         <div
           className="hero-line hero-line-h-r absolute right-0 h-px w-84.25 top-[224.5px] max-xl:hidden"
           style={{ background: C4, transitionDelay: "100ms" }}
@@ -81,13 +81,13 @@ export default function HeroGrid() {
       </div>
 
       {/*
-       * INNER CONTAINERS — visible only at xl+ (≥1280px)
+       * INNER CONTAINERS - visible only at xl+ (≥1280px)
        * `hidden xl:contents` makes this div transparent in layout so its
        * absolutely-positioned children are placed relative to the section.
        */}
       <div className="hidden xl:contents">
         {/*
-         * centering-w-1128 — top 0, height 1096px
+         * centering-w-1128 - top 0, height 1096px
          * Contains:
          *   • 1 pair of vertical lines  (delay-400, grad from-75%)
          *   • 1 pair of H brackets at 555.5px  (delay-100)
@@ -114,7 +114,7 @@ export default function HeroGrid() {
         </div>
 
         {/*
-         * centering-w-681 — top 75px, height 853px
+         * centering-w-681 - top 75px, height 853px
          * Gradient: from-75% to-90% (fades out faster than the outer pairs)
          */}
         <div className="absolute top-18.75 h-213.25" style={cw(681)}>
@@ -129,7 +129,7 @@ export default function HeroGrid() {
         </div>
 
         {/*
-         * centering-w-905 — top 155px, height 773px
+         * centering-w-905 - top 155px, height 773px
          * Gradient: from-60% to-90% (starts fading earliest)
          */}
         <div className="absolute top-38.75 h-193.25" style={cw(905)}>

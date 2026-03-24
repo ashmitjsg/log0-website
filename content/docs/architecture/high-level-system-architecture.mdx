@@ -1,9 +1,17 @@
 ---
-title: High-Level System Architecture
-description: log0 is a multi-tenant log intelligence and incident management platform. It ingests high-volume logs, clusters similar errors using fingerprinting, and creates actionable incidents routed directly to Slack.
+title: System Design
+description: The full platform architecture - all six services, five Kafka topics, three storage layers, and how they connect. Includes the multi-tenant model and service dependency map.
 ---
 
-## High-Level System Architecture
+## What You're Looking At
+
+log0 is a **linear pipeline disguised as a microservice platform**. A log enters at the left, an actionable incident exits at the right. Every service in between has exactly one job.
+
+The core insight driving this design: **log processing is a stream transformation problem, not a request/response problem.** Kafka lets each stage run at its own pace, fail independently, and scale horizontally without coupling to its neighbors.
+
+---
+
+## Full Platform Architecture
 
 ```mermaid
 graph TD
@@ -27,67 +35,265 @@ graph TD
         end
 
         subgraph Processing["Processing Layer"]
-            NS[Normalization Service\nSpring Boot]
-            CS[Clustering Service\nSpring Boot]
-            IS[Incident Service\nSpring Boot\nREST API]
-            NOTIF[Notification Service\nSpring Boot]
+            NS[Normalization Service\nSpring Boot :8081]
+            CS[Clustering Service\nSpring Boot :8082]
+            IS[Incident Service\nSpring Boot :8083]
+            NOTIF[Notification Service\nSpring Boot :8084]
         end
 
         subgraph AI["AI Layer"]
-            AIS[AI Summary Service\nLLM Integration]
+            AIS[AI Summary Service\nAzure OpenAI GPT-4o]
         end
 
         subgraph Storage["Storage Layer"]
-            PG[(PostgreSQL\nIncidents + Users\n+ Tenants)]
+            PG[(PostgreSQL\nIncidents · Users · Tenants)]
             CH[(ClickHouse\nLog Events)]
-            RD[(Redis\nRate Limiting\n+ Caching)]
+            RD[(Redis\nRate Limiting · Cache)]
         end
 
-        subgraph Auth["Auth / SaaS Layer"]
-            AS[Auth Service\nJWT + Tenant Context]
+        subgraph Auth["Auth Layer"]
+            AS[Auth Service :8085\nJWT · Tenant Context · API Keys]
         end
     end
 
     subgraph Notifications["Notification Channels"]
-        SL[Slack\nAlerts + Interactive]
-        WA[WhatsApp\nAlert Only]
+        SL[Slack\nBlock Kit · Interactive]
+        WA[WhatsApp\nAlert-only]
     end
 
-    subgraph Frontend["Frontend (React)"]
-        FE[log0 Web App\nIncidents + Logs UI]
+    subgraph Frontend["Frontend"]
+        FE[log0 Web App :3000\nReact · TypeScript]
     end
 
-    C1 -->|POST /api/v1/logs\nX-TENANT-ID header| IG
+    C1 -->|POST /api/v1/logs\nX-TENANT-ID: acme-corp\nX-API-KEY: ak_xxxx| IG
     C2 -->|POST /api/v1/logs| IG
     C3 -->|POST /api/v1/logs| IG
 
-    IG -->|RawLogEvent| T1
-    IG -->|on failure| DLQ
+    IG -->|RawLogEvent\nkey: tenantId| T1
+    IG -->|on Kafka failure| DLQ
 
     T1 -->|consume| NS
-    NS -->|NormalizedLogEvent| T2
+    NS -->|NormalizedLogEvent\nwith fingerprint| T2
     NS -->|on failure| DLQ
     NS -->|batch insert| CH
 
     T2 -->|consume| CS
-    CS -->|IncidentEvent| T3
-    CS -->|store embeddings| RD
+    CS -->|IncidentEvent\nwhen threshold exceeded| T3
+    CS -->|embedding cache| RD
 
     T3 -->|consume| IS
-    IS -->|store/update| PG
-    IS -->|trigger AI| AIS
-    AIS -->|summary| IS
+    IS -->|upsert incident| PG
+    IS -->|async| AIS
+    AIS -->|ai_summary| IS
     IS -->|NotificationEvent| T4
 
     T4 -->|consume| NOTIF
-    NOTIF -->|alert| SL
+    NOTIF -->|Block Kit alert| SL
     NOTIF -->|alert| WA
 
-    SL -->|assignment action| IS
+    SL -->|assignment action\nPOST /slack/interactions| IS
 
-    AS -->|JWT + tenantId| IG
-    AS -->|JWT + tenantId| IS
+    AS -->|validate JWT + tenantId| IG
+    AS -->|validate JWT + tenantId| IS
 
-    FE -->|REST API| IS
-    FE -->|REST API| AS
+    FE -->|REST| IS
+    FE -->|REST| AS
 ```
+
+### Reading the Diagram
+
+The pipeline has two parallel outputs from normalization:
+
+- **To `normalized-logs`** - the event continues downstream toward incident detection
+- **To ClickHouse** - every normalized log is stored for historical queries and the AI summary prompt
+
+This means ClickHouse receives *every* log that survives normalization, not just those that became incidents. Engineers can query raw log history even for errors that never crossed the incident threshold.
+
+The Slack integration has a **feedback loop**: when an admin clicks "Assign Engineer" in a Slack message, the interaction webhook hits the Notification Service, which calls back into the Incident Service to update state. This is the only synchronous cross-service call in the data path.
+
+---
+
+## Multi-Tenant Architecture
+
+Every log0 deployment is shared infrastructure. Multiple engineering teams (tenants) send logs to the same Kafka cluster, the same services, and the same databases - with strict data isolation enforced at every layer.
+
+```mermaid
+graph TD
+    subgraph TenantA["Tenant A - acme-corp"]
+        A_SVC[acme-corp/payment-service]
+        A_INC[Acme Incidents]
+        A_SLACK[Acme Slack #incidents]
+    end
+
+    subgraph TenantB["Tenant B - startup-xyz"]
+        B_SVC[startup-xyz/auth-service]
+        B_INC[XYZ Incidents]
+        B_SLACK[XYZ Slack #alerts]
+    end
+
+    subgraph log0Core["log0 Shared Infrastructure"]
+        IG["Ingestion Gateway\nExtracts X-TENANT-ID → RequestContext"]
+        K["Kafka\nPartitioned by tenantId\n(ordering guarantee per tenant)"]
+        NS["Normalization Service\nPasses tenantId through all events"]
+        IS["Incident Service\nALL queries filtered by tenant_id"]
+        PG["PostgreSQL\ntenant_id on every row"]
+        CH["ClickHouse\ntenant_id on every row"]
+    end
+
+    A_SVC -->|X-TENANT-ID: acme-corp| IG
+    B_SVC -->|X-TENANT-ID: startup-xyz| IG
+
+    IG --> K
+    K --> NS
+    NS --> IS
+    IS --> PG
+    IS --> CH
+
+    IS -->|acme incidents only| A_INC
+    IS -->|xyz incidents only| B_INC
+
+    A_INC --> A_SLACK
+    B_INC --> B_SLACK
+```
+
+### How Isolation Works
+
+Tenant context is established at the boundary (the `X-TENANT-ID` header) and carried through the entire pipeline as a first-class field on every event.
+
+**Kafka isolation:** Kafka messages are keyed by `tenantId`. This routes all events for the same tenant to the same partition, guaranteeing that logs from a single tenant are processed in the order they were received. A burst from `acme-corp` does not affect `startup-xyz`'s partition.
+
+**Storage isolation:** Every table in PostgreSQL has a `tenant_id` UUID column. Every log in ClickHouse has a `tenant_id` field. The Incident Service enforces `WHERE tenant_id = ?` on every query - the application layer reinforces what the data model mandates.
+
+**No shared session state:** There is no in-memory state that mixes tenants. Each Kafka event is self-describing (it carries `tenantId`), so even if a consumer processes events from multiple tenants in the same batch, they are handled independently.
+
+---
+
+## Kafka Topics and Event Flow
+
+Kafka is the connective tissue of log0. This diagram shows which service produces to which topic and which service consumes from it.
+
+```mermaid
+graph LR
+    subgraph Producers
+        IG[Ingestion Gateway]
+        NS[Normalization Service]
+        CS[Clustering Service]
+        IS[Incident Service]
+    end
+
+    subgraph Topics["Kafka Topics"]
+        T1[("raw-logs\nkey: tenantId\nRawLogEvent")]
+        T2[("normalized-logs\nkey: tenantId\nNormalizedLogEvent")]
+        T3[("incident-events\nkey: tenantId\nIncidentEvent")]
+        T4[("notification-events\nkey: incidentId\nNotificationEvent")]
+        DLQ[("raw-logs-dlq\nkey: eventId\nDlqEvent")]
+    end
+
+    subgraph Consumers
+        NS2[Normalization Service]
+        CS2[Clustering Service]
+        IS2[Incident Service]
+        NOTIF[Notification Service]
+        MON[DLQ Monitor]
+    end
+
+    IG -->|publish| T1
+    IG -->|on failure| DLQ
+
+    T1 -->|consume| NS2
+    NS2 -->|publish| T2
+    NS2 -->|on failure| DLQ
+
+    T2 -->|consume| CS2
+    CS2 -->|publish| T3
+
+    T3 -->|consume| IS2
+    IS2 -->|publish| T4
+
+    T4 -->|consume| NOTIF
+
+    DLQ -->|consume| MON
+```
+
+### Topic Design Decisions
+
+**Why five topics instead of one?**
+
+Each topic represents a discrete transformation in the pipeline. If you used a single topic, every consumer would receive raw logs and would need to independently normalize, cluster, and decide whether to create an incident. By separating topics, each service processes only the events it cares about at the maturity level it expects.
+
+**Why is the DLQ key `eventId` and not `tenantId`?**
+
+Downstream topics use `tenantId` as the key to guarantee per-tenant ordering. The DLQ is a recovery mechanism, not a processing pipeline - order between failed events from different tenants does not matter. Using `eventId` distributes failed events evenly across DLQ partitions and makes individual events easier to locate during replay.
+
+**Why does `notification-events` use `incidentId` as the key?**
+
+By the time a notification is published, the ordering that matters is per-incident, not per-tenant. Multiple notifications about the same incident (created, assigned, resolved) should land on the same partition so the Notification Service processes them in order and can update the Slack message correctly.
+
+---
+
+## Service Dependency Map
+
+This graph shows which external systems each service depends on directly.
+
+```mermaid
+graph TD
+    K[Apache Kafka]
+    PG[PostgreSQL]
+    CH[ClickHouse]
+    RD[Redis]
+    LLM["Azure OpenAI\n(GPT-4o)"]
+    SLACK[Slack API]
+    WA[WhatsApp API]
+
+    IG[Ingestion Gateway] -->|produce raw-logs| K
+    IG -->|rate limit check| RD
+
+    NS[Normalization Service] -->|consume raw-logs\nproduce normalized-logs| K
+    NS -->|batch insert log events| CH
+
+    CS[Clustering Service] -->|consume normalized-logs\nproduce incident-events| K
+    CS -->|time-window state + embeddings| RD
+
+    IS[Incident Service] -->|consume incident-events\nproduce notification-events| K
+    IS -->|upsert incidents + assignments| PG
+    IS -->|async summarize| LLM
+
+    NOTIF[Notification Service] -->|consume notification-events| K
+    NOTIF -->|send Block Kit alerts| SLACK
+    NOTIF -->|send alerts| WA
+
+    AS[Auth Service] -->|users, tenants, API keys| PG
+    AS -->|session cache| RD
+
+    FE[Frontend] -->|incident management REST| IS
+    FE -->|auth REST| AS
+```
+
+### Critical Path
+
+The end-to-end critical path - from log ingestion to Slack notification - touches every service. The slowest link in this chain determines incident detection latency.
+
+The two highest-latency operations are:
+1. **Clustering window** - the Clustering Service accumulates events over a configurable time window before emitting an `IncidentEvent`. This window is tunable but introduces intentional lag.
+2. **AI summary** - GPT-4o is called asynchronously after the incident is created. It does not block the notification; engineers see the incident in Slack before the summary arrives.
+
+---
+
+## Port Reference
+
+| Service | Port | Protocol | Status |
+|---|---|---|---|
+| Ingestion Gateway | 8080 | HTTP | ✅ Implemented |
+| Normalization Service | 8081 | - (Kafka only) | ✅ Implemented |
+| Clustering Service | 8082 | - (Kafka only) | Planned |
+| Incident Service | 8083 | HTTP + Kafka | Planned |
+| Notification Service | 8084 | HTTP + Kafka | Planned |
+| Auth Service | 8085 | HTTP | Planned |
+| Frontend (Vite) | 3000 | HTTP | Planned |
+| Kafka (external) | 9092 | TCP | ✅ Running |
+| Kafka (internal/Docker) | 29092 | TCP | ✅ Running |
+| Zookeeper | 2181 | TCP | ✅ Running |
+| PostgreSQL | 5432 | TCP | Planned |
+| ClickHouse (HTTP) | 8123 | HTTP | Planned |
+| ClickHouse (native) | 9000 | TCP | Planned |
+| Redis | 6379 | TCP | Planned |

@@ -57,9 +57,9 @@ export default function Navbar() {
         ].join(" ")}
       >
         <div className="container flex items-center justify-between py-4">
-          {/* Left — logo + desktop nav */}
+          {/* Left - logo + desktop nav */}
           <div className="flex items-center gap-10">
-            {/* Logo — opacity + lift, no blur */}
+            {/* Logo - opacity + lift, no blur */}
             <motion.a
               href="/"
               aria-label="log0 homepage"
@@ -100,7 +100,7 @@ export default function Navbar() {
             </nav>
           </div>
 
-          {/* Right — CTA + hamburger */}
+          {/* Right - CTA + hamburger */}
           <div className="flex items-center gap-3">
             <motion.div
               className="hidden lg:block"
@@ -125,7 +125,7 @@ export default function Navbar() {
               </Button>
             </motion.div>
 
-            {/* Hamburger — hidden on lg+ */}
+            {/* Hamburger - hidden on lg+ */}
             <button
               className="relative flex size-8 items-center justify-center rounded-md text-white transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50 lg:hidden"
               onClick={() => setMenuOpen((o) => !o)}

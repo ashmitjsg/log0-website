@@ -1,0 +1,309 @@
+---
+title: Architecture Decisions
+description: Architecture Decision Records (ADRs) for every significant design choice in log0 - why Kafka, why ClickHouse, why deterministic fingerprinting, why manual ACK, and more.
+---
+
+## About These Records
+
+Architecture Decision Records (ADRs) document the *why* behind design choices. Code shows you what was built. ADRs show you why it was built that way - including the alternatives that were considered and rejected.
+
+Each record follows this format: **Context** (what problem forced a decision), **Decision** (what was chosen), **Alternatives considered** (what was rejected), and **Consequences** (trade-offs accepted).
+
+---
+
+## ADR-001: Apache Kafka as the Event Bus
+
+**Status:** Accepted
+
+### Context
+
+log0 needs to move log events through a multi-stage processing pipeline: ingestion → normalization → clustering → incident creation → notification. The pipeline stages have different throughput requirements, can fail independently, and need to scale independently. The ingestion gateway must return immediately to the client - it cannot wait for downstream processing to complete.
+
+A message queue or event bus is required to decouple the stages.
+
+### Decision
+
+Use **Apache Kafka** (Confluent 7.5.0) as the event bus between all services.
+
+### Alternatives Considered
+
+| Alternative | Why Rejected |
+|---|---|
+| **RabbitMQ** | AMQP-based push model makes it harder to replay events. No native consumer group semantics. Log replay (for debugging or DLQ recovery) requires additional tooling. |
+| **AWS SQS/SNS** | Vendor lock-in. No consumer group semantics - SQS requires one queue per consumer. Fan-out to multiple consumers requires SNS → multiple SQS queues. Replay is not native. |
+| **Redis Streams** | Suitable for low-throughput use cases. At 10,000 logs/second, Redis becomes a bottleneck. No partition-level ordering guarantee keyed by tenantId. |
+| **Direct HTTP** | Synchronous coupling. If the normalization service is down, ingestion fails. Does not support the at-least-once reliability model. |
+
+### Consequences
+
+**Accepted trade-offs:**
+- Kafka requires Zookeeper (or KRaft in newer versions), adding operational complexity
+- Local development requires running Kafka infrastructure (Docker Compose)
+- Message ordering is guaranteed per partition (per tenantId), not globally
+
+**Benefits realized:**
+- Each service can scale independently based on its consumer lag
+- Kafka's consumer group semantics allow multiple normalization instances to share load automatically
+- Message replay is native - reprocessing from a given offset requires no extra tooling
+- The DLQ pattern is a natural extension of Kafka's existing topic model
+- Producer idempotence (`enable.idempotence=true`) prevents duplicate messages under retries
+
+---
+
+## ADR-002: ClickHouse for Log Event Storage
+
+**Status:** Accepted
+
+### Context
+
+log0 stores every normalized log event for historical queries and AI summary generation. The access patterns are:
+
+1. High-volume writes: up to 10,000 events/second
+2. Aggregation queries: `GROUP BY fingerprint ORDER BY COUNT DESC` over millions of rows
+3. Time-range scans: "show all ERROR logs for tenant X in the last 24 hours"
+4. Filtered reads: "show logs matching fingerprint Y for incident Z"
+
+These are analytical access patterns, not transactional ones.
+
+### Decision
+
+Use **ClickHouse** as the log event store.
+
+### Alternatives Considered
+
+| Alternative | Why Rejected |
+|---|---|
+| **Elasticsearch** | Excellent full-text search, but expensive to operate at scale. Storage is 3–5x ClickHouse for the same data. Aggregation queries (GROUP BY, COUNT) are significantly slower on Elasticsearch than ClickHouse. |
+| **PostgreSQL** | Already used for incident state. Not suitable for log storage - OLTP database, poor compression for time-series data, slow on large aggregations. `GROUP BY fingerprint` over millions of rows requires full table scans. |
+| **DynamoDB** | No native aggregation support. Running GROUP BY queries requires exporting to Athena. Operational complexity disproportionate to the use case. |
+| **Loki (Grafana)** | Opinionated log label model. Limited query language. Better suited for infrastructure logs than application event analytics. |
+
+### Consequences
+
+**Accepted trade-offs:**
+- ClickHouse has a different query dialect (not standard SQL in all aspects)
+- ACID transactions are not supported - not appropriate for transactional writes
+- Learning curve for engineers familiar with PostgreSQL but not ClickHouse
+
+**Benefits realized:**
+- Columnar storage means `GROUP BY fingerprint` reads only the fingerprint column - dramatically faster than row-based alternatives
+- Native compression reduces storage cost 5–10x compared to Elasticsearch for log data
+- `DateTime64` type provides nanosecond precision for accurate log correlation
+- `Map(String, String)` type for `attributes` allows schema-free structured data without migrations
+
+---
+
+## ADR-003: Deterministic SHA-256 Fingerprinting
+
+**Status:** Accepted
+
+### Context
+
+Incident deduplication requires grouping "similar" log events together. Two errors that differ only in dynamic values (user ID, IP address, timeout duration) should be treated as the same error pattern. The question is: how do you define "similar"?
+
+### Decision
+
+Use **deterministic SHA-256 fingerprinting** based on a normalized message template.
+
+The fingerprint formula:
+```
+fingerprint = SHA-256(
+    serviceName + "|" +
+    messageTemplate + "|" +    ← dynamic values stripped
+    exceptionType + "|" +      ← nullable
+    firstStackFrame            ← line numbers stripped
+)
+```
+
+Message templating strips dynamic values before hashing:
+- Numbers → `<number>`
+- IP addresses → `<ip>`
+- UUIDs → `<uuid>`
+
+### Alternatives Considered
+
+| Alternative | Why Rejected |
+|---|---|
+| **ML-based semantic clustering** | Requires training data, model maintenance, and introduces non-determinism. The same error may be clustered differently after a model update, breaking existing incidents. No reproducibility guarantee. |
+| **Edit distance / Levenshtein** | O(n²) complexity. At 10,000 events/second, pairwise comparison is computationally infeasible. |
+| **Exact message match** | Too strict. Two instances of `timeout after 30000ms` and `timeout after 28514ms` would create separate incidents. |
+| **Exception class only** | Too loose. `NullPointerException` appears everywhere. Grouping by exception type only would aggregate unrelated errors. |
+
+### Consequences
+
+**Accepted trade-offs:**
+- Novel log formats with irregular structure may not template cleanly, producing noisy fingerprints
+- The regex patterns for stripping dynamic values must be maintained as log formats evolve
+- Edge cases: logs with no stack trace, logs in non-English languages, logs with custom dynamic patterns
+
+**Benefits realized:**
+- Fully deterministic - the same log always produces the same fingerprint, regardless of time or deployment
+- No infrastructure required beyond a SHA-256 hash function
+- Fingerprints are stable across deployments - an incident created today and a reoccurrence next week will share the same fingerprint and be correctly linked
+- Zero false negatives for structurally identical errors (unlike fuzzy matching)
+
+---
+
+## ADR-004: Always-ACK DLQ Pattern
+
+**Status:** Accepted
+
+### Context
+
+Kafka consumers in log0 use manual offset acknowledgment. When a consumer fails to process a message (normalization error, serialization failure, downstream Kafka publish failure), a decision is needed: what should happen to the unprocessed message?
+
+The naive answer is to not ACK - let Kafka redeliver the message. But if the message itself is the problem (malformed payload, unexpected schema), it will fail on every redelivery, permanently stalling the partition.
+
+### Decision
+
+On any processing failure:
+1. Wrap the original event in a `DlqEvent` (capturing `originalEvent`, `errorMessage`, `failedAt`, `failedAtTs`)
+2. Publish the `DlqEvent` to `raw-logs-dlq`
+3. **Always ACK the original offset** - even if the DLQ publish fails
+
+### Alternatives Considered
+
+| Alternative | Why Rejected |
+|---|---|
+| **Retry without DLQ** | A bad message is retried indefinitely. One malformed event from a misconfigured service stalls the entire partition for all tenants sharing that partition. |
+| **Discard on failure** | Data loss. No ability to replay or investigate failures. |
+| **DLQ only if retries exhausted** | Adds retry delay before DLQ capture. For a known-bad message, retries add latency without benefit. |
+| **Block partition on failure** | Guarantees ordering but makes the system brittle. One bad actor (a service sending malformed logs) can halt the entire ingestion pipeline. |
+
+### Consequences
+
+**Accepted trade-offs:**
+- Messages that fail DLQ publish are lost (the ACK has already been sent). This is an acknowledged edge case - a failure to write to the DLQ is treated as fatal and triggers an alert.
+- The DLQ must be monitored. A growing DLQ is a silent signal that something is broken upstream.
+
+**Benefits realized:**
+- The ingestion and normalization pipelines are never stalled by individual bad messages
+- Failed events are preserved with full context (`originalEvent`, error, timestamp, service) for post-mortem analysis
+- Replay is possible: fix the bug, re-publish `originalEvent` to `raw-logs`, the pipeline processes it correctly
+
+---
+
+## ADR-005: Manual Kafka Offset Acknowledgment
+
+**Status:** Accepted
+
+### Context
+
+Kafka consumers can manage offset commits in two ways: automatically (Kafka commits periodically, regardless of processing state) or manually (the application commits only when it decides to).
+
+### Decision
+
+Use **manual offset acknowledgment** for all Kafka consumers in log0.
+
+Configuration:
+```yaml
+kafka:
+  consumer:
+    enable-auto-commit: false
+  listener:
+    ack-mode: manual
+```
+
+Consumer code:
+```java
+@KafkaListener(topics = "raw-logs")
+public void consume(RawLogEvent event, Acknowledgment ack) {
+    try {
+        // process...
+        producer.publish(normalized);
+        ack.acknowledge();   // commit only on success
+    } catch (Exception e) {
+        dlqProducer.publish(dlqEvent);
+        ack.acknowledge();   // commit after DLQ (ADR-004)
+    }
+}
+```
+
+### Alternatives Considered
+
+| Alternative | Why Rejected |
+|---|---|
+| **Auto-commit** | Kafka commits the offset after a configurable interval, regardless of whether processing succeeded. If the service crashes after committing but before completing processing, messages are silently lost. At-most-once semantics - not acceptable for incident data. |
+
+### Consequences
+
+**Accepted trade-offs:**
+- If the service crashes after processing but before ACKing, the message is reprocessed. Consumers must be idempotent.
+- Slightly more complex consumer code
+
+**Benefits realized:**
+- At-least-once delivery guarantee - no message is ever silently lost
+- Combined with the DLQ pattern, every message either succeeds or is captured for replay
+
+---
+
+## ADR-006: Custom Kafka Serializers
+
+**Status:** Accepted
+
+### Context
+
+Spring Kafka provides a `JsonSerializer` and `JsonDeserializer` that use Jackson to convert Java objects to/from bytes. They work automatically but rely on Spring's managed Jackson `ObjectMapper`, which introduces coupling to Spring's auto-configuration and Jackson version management.
+
+### Decision
+
+Write **custom serializers and deserializers** for every Kafka event type.
+
+Each serializer is a straightforward wrapper:
+```java
+public class RawLogEventSerializer implements Serializer<RawLogEvent> {
+    private final ObjectMapper objectMapper = new ObjectMapper()
+        .registerModule(new JavaTimeModule());
+
+    @Override
+    public byte[] serialize(String topic, RawLogEvent data) {
+        return objectMapper.writeValueAsBytes(data);
+    }
+}
+```
+
+### Consequences
+
+**Accepted trade-offs:**
+- More classes to maintain (one serializer + one deserializer per event type)
+- Jackson version must be explicitly managed per serializer
+
+**Benefits realized:**
+- Full control over serialization behavior - no Spring magic
+- Custom serializers can be unit tested independently
+- Jackson version can be chosen per serializer (tools.jackson 3.x for ingestion, com.fasterxml.jackson 2.x for normalization - intentional due to Spring Boot 4 transitional period)
+- Schema evolution is explicit: changing a serializer is a deliberate code change, not an implicit configuration change
+
+---
+
+## ADR-007: `tenantId` as the Kafka Partition Key
+
+**Status:** Accepted
+
+### Context
+
+Kafka assigns messages to partitions based on the message key. The partition a message lands on determines which consumer instance processes it (within a consumer group). The key design determines two things: ordering guarantees and load distribution.
+
+### Decision
+
+Use **`tenantId`** as the Kafka message key for all topics in the data pipeline (`raw-logs`, `normalized-logs`). Use **`incidentId`** as the key for `notification-events`.
+
+### Reasoning
+
+All messages with the same key land on the same partition, and Kafka guarantees ordering within a partition. Setting `tenantId` as the key means:
+
+1. **All logs from the same tenant are processed in order.** This is critical for the Clustering Service - if two logs from the same tenant are processed out of order, the clustering time window may be computed incorrectly.
+2. **Tenant data is isolated to specific partitions.** While this is not a security boundary (all consumers read all partitions), it simplifies reasoning about which consumer instance is handling which tenant's data.
+
+`notification-events` uses `incidentId` as the key because multiple notifications about the same incident (created, assigned, resolved) must be processed in order by the Notification Service to correctly update the Slack message.
+
+### Consequences
+
+**Accepted trade-offs:**
+- Uneven partition distribution if tenant log volume is highly skewed (one large tenant, many small ones). Mitigated at scale by sub-tenant keying (e.g., `tenantId:serviceId`).
+- A tenant cannot be distributed across multiple consumer instances within the same group - all their logs are on one partition. Horizontal scaling applies across tenants, not within a single tenant.
+
+**Benefits realized:**
+- Per-tenant ordering guarantee - essential for correct clustering
+- Simple, predictable routing - given a tenantId, you know which partition its events are on
+- Natural foundation for per-tenant rate limiting at the partition level

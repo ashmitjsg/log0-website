@@ -5,9 +5,7 @@ description: log0 is a multi-tenant log intelligence and incident management pla
 
 ## What is log0?
 
-log0 is a backend-first SaaS platform for engineering teams drowning in log noise.
-
-It ingests application logs from distributed services, normalizes them into a canonical schema, groups similar errors using deterministic fingerprinting, and automatically creates incidents when recurring failures cross a threshold. Incidents are summarized by AI and routed to the owning engineer via Slack — with assignment, acknowledgment, and resolution handled without leaving the conversation.
+log0 is a backend-first SaaS platform for engineering teams drowning in log noise. It ingests application logs from distributed services, groups similar errors into incidents using deterministic fingerprinting, and routes them to the owning engineer via Slack — with AI-generated summaries attached at creation.
 
 Think: **SigNoz + PagerDuty**, designed from the ground up for multi-tenant use.
 
@@ -15,82 +13,13 @@ Think: **SigNoz + PagerDuty**, designed from the ground up for multi-tenant use.
 
 ## The Problem
 
-Modern microservice teams face three compounding issues:
+Modern microservice teams face three compounding failures:
 
-- **Alert fatigue** - 10,000 error logs fire for the same root cause. Which one matters?
-- **Unclear ownership** - an alert fires. Nobody knows who should take it.
-- **Slow root cause** - engineers manually correlate logs across services to understand what's wrong.
-
-log0 addresses all three:
-
-1. Groups 10,000 similar errors into a single incident using fingerprinting
-2. Routes it to the correct engineer via Slack interactive messages
-3. Attaches an AI-generated summary so the engineer understands the issue before opening a terminal
-
----
-
-## Architecture
-
-log0 is event-driven, built on Kafka. Each service has a single responsibility and communicates exclusively through Kafka topics.
-
-```
-Client Services
-      │
-      ▼
-Ingestion Gateway          REST API — accepts logs, validates, publishes to Kafka
-      │
-      ▼  [raw-logs]
-Normalization Service      Canonical schema, fingerprint generation
-      │
-      ▼  [normalized-logs]
-Clustering Service         Groups by fingerprint + time window → incident detection
-      │
-      ▼  [incident-events]
-Incident Service           PostgreSQL state machine (NEW → ASSIGNED → ACKED → RESOLVED)
-      │
-      ▼  [notification-events]
-Notification Service       Slack Block Kit alerts, interactive assignment, WhatsApp
-```
-
-**Storage:**
-
-- **ClickHouse** - log event storage, optimized for high-volume analytical queries
-- **PostgreSQL** - incidents, users, tenants, assignments (ACID, relational)
-- **Redis** - rate limiting, clustering time-window state, embedding cache
-
----
-
-## Core Concepts
-
-### Fingerprint
-
-A SHA-256 hash of the structural pattern of a log message — not its specific values.
-
-```
-"User 123 failed login from 10.0.0.1"
-        ↓
-"User <number> failed login from <ip>"   ← message template
-        ↓
-SHA-256(service + "|" + template + "|" + exceptionType + "|" + stackFrame)
-```
-
-Two logs with different values but the same pattern produce the same fingerprint. This is the foundation for deduplication and clustering.
-
-### Incident Lifecycle
-
-```
-NEW → ASSIGNED → ACKNOWLEDGED → RESOLVED
-```
-
-Every state transition is recorded in `incident_state_history` for a full audit trail. Assignment is done via Slack interactive messages - no separate tool required.
-
-### Multi-Tenancy
-
-Every log, incident, and user is scoped to a `tenant_id`. Kafka messages are keyed by `tenant_id` for per-tenant ordering guarantees. No tenant can observe or affect another's data.
-
-### Dead Letter Queue
-
-When a message fails processing, it is wrapped in a `DlqEvent` and published to `raw-logs-dlq`. The original Kafka offset is always acknowledged — partition blocking is never allowed. Failed messages can be replayed after the underlying bug is fixed.
+| Failure | log0's answer |
+|---|---|
+| **Alert fatigue** — 10,000 error logs for the same root cause | Fingerprinting + clustering → 1 incident |
+| **Unclear ownership** — an alert fires, nobody knows who owns it | Slack-native assignment with engineer selection modal |
+| **Slow root cause** — engineers manually correlate logs across services | AI summary attached at incident creation, before the engineer opens a terminal |
 
 ---
 
@@ -106,27 +35,30 @@ curl -X POST http://localhost:8080/api/v1/logs \
   -H "X-ENVIRONMENT: production" \
   -H "X-API-KEY: your-api-key" \
   -d '{
-    "timestamp": "2026-03-13T10:00:00Z",
+    "timestamp": "2026-03-24T10:00:00Z",
     "level": "ERROR",
     "message": "Payment gateway timeout after 30s",
     "trace": "com.example.PaymentService.process:142"
   }'
 ```
 
-A `202 Accepted` response means the log was received and published to Kafka. The normalization and clustering pipeline runs asynchronously.
+A `202 Accepted` response means the log was received and published to Kafka. The normalization, clustering, and incident pipeline runs asynchronously — your service is never blocked waiting for it.
 
 ---
 
-## Tech Stack
+## What's in These Docs
 
-| Layer                 | Technology                |
-| --------------------- | ------------------------- |
-| Language              | Java 25                   |
-| Framework             | Spring Boot 4             |
-| Messaging             | Apache Kafka              |
-| Log storage           | ClickHouse                |
-| Incident storage      | PostgreSQL                |
-| Cache / rate limiting | Redis                     |
-| AI summaries          | Azure OpenAI (GPT-4o)     |
-| Notifications         | Slack Block Kit, WhatsApp |
-| Build                 | Maven, Docker             |
+<Cards>
+  <Card title="Architecture" href="/docs/architecture">
+    How the platform is built — system context, all six services, Kafka event pipeline, storage layers, and the design decisions behind every choice.
+  </Card>
+  <Card title="Flow Diagrams" href="/docs/architecture/flow-diagrams">
+    What happens at runtime. Traced through a concrete scenario: a payment service error storm from first HTTP request to Slack notification.
+  </Card>
+  <Card title="Service Internals" href="/docs/architecture/lld-uml">
+    Class diagrams, data models, and Kafka event schemas for every service. Reference for implementation code.
+  </Card>
+  <Card title="Architecture Decisions" href="/docs/architecture/decisions">
+    Why Kafka, why ClickHouse, why SHA-256 fingerprinting, why manual ACK. Every significant design choice with alternatives considered.
+  </Card>
+</Cards>

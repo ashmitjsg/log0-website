@@ -24,7 +24,7 @@
 }
 
 /*
-  Global page container — consistent horizontal padding across all breakpoints.
+  Global page container - consistent horizontal padding across all breakpoints.
   Use on every top-level section, navbar, footer, etc.
 
   Usage:
@@ -32,9 +32,9 @@
     <section class="container">...</section>
 
   Breakpoints:
-    base (< 640px): 1rem  (16px) — tight mobile, matches their [--padding-x:16px]
-    sm   (640px+):  2rem  (32px) — matches their max-lg:px-32 content padding
-    lg   (1024px+): 2rem  (32px) — desktop relies on max-width centering, not padding
+    base (< 640px): 1rem  (16px) - tight mobile, matches their [--padding-x:16px]
+    sm   (640px+):  2rem  (32px) - matches their max-lg:px-32 content padding
+    lg   (1024px+): 2rem  (32px) - desktop relies on max-width centering, not padding
 */
 @utility container {
   width: 100%;
@@ -50,7 +50,7 @@
 }
 
 /*
-  Hero grid lines — animated reveal on mount.
+  Hero grid lines - animated reveal on mount.
   Lines start collapsed (scaleY/scaleX = 0) and expand when
   the parent receives the `hero-revealed` class via React state.
 */
@@ -77,7 +77,7 @@
 }
 
 /*
-  Reusable teal glow orb — add to any div inside a `relative` parent.
+  Reusable teal glow orb - add to any div inside a `relative` parent.
   Covers the full parent and fades out radially from center.
   Customize position via `style` or Tailwind's `[background]` override.
 
@@ -99,7 +99,7 @@
 }
 
 /*
-  Hero section background — bottom-up teal glow into near-black.
+  Hero section background - bottom-up teal glow into near-black.
 
   Usage:
     <section class="hero-bg">...</section>

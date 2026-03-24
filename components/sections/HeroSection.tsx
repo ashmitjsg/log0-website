@@ -55,7 +55,7 @@ export default function HeroSection() {
           {...fadeUp(1.0)}
         >
           log0 investigates, correlates, and resolves incidents by connecting
-          your logs, traces, and alerts — before your users notice.
+          your logs, traces, and alerts - before your users notice.
         </motion.p>
 
         {/* CTAs */}

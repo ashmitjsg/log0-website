@@ -1,0 +1,694 @@
+---
+title: Service Internals
+description: Class diagrams, data models, and Kafka event schemas for every log0 service. Reference documentation for implementation - covers the ingestion gateway, normalization service, incident service, notification service, all Kafka events, the PostgreSQL data model, and the ClickHouse log schema.
+---
+
+## What This Section Covers
+
+This section documents the internal structure of each service - the classes, their relationships, and the design decisions behind them. Use this as a reference when reading, writing, or reviewing implementation code.
+
+**Implementation status as of March 2026:**
+
+| Service | Status | Notes |
+|---|---|---|
+| Ingestion Gateway | ✅ ~85% complete | REST API, Kafka producer, DLQ all working |
+| Normalization Service | ✅ ~70% complete | Normalization working; `FingerprintGenerator` is a stub |
+| Clustering Service | Planned | Not yet started |
+| Incident Service | Planned | Not yet started |
+| Notification Service | Planned | Not yet started |
+| Auth Service | Planned | Not yet started |
+
+---
+
+## Ingestion Gateway
+
+**Responsibility:** Accept log events from client services over HTTP, validate them, and publish them to Kafka. Return immediately - the gateway's job ends at `202 Accepted`. It has no downstream dependencies except Kafka and Redis (rate limiting, planned).
+
+**Key design decisions:**
+- HTTP entry point is synchronous; Kafka publish is asynchronous with a completion callback
+- On Kafka failure, the DLQ is published from within the async callback - the HTTP response is already `202` before the failure is known
+- All tenant context comes from HTTP headers, never from the request body. The body is the log event only.
+
+```mermaid
+classDiagram
+    class LogIngestionController {
+        -LogIngestionService ingestionService
+        -RequestHeaderExtractor headerExtractor
+        +ingestLog(httpRequest: HttpServletRequest, logRequest: LogIngestionRequest): ResponseEntity~Void~
+    }
+
+    class LogIngestionService {
+        <<interface>>
+        +ingest(request: LogIngestionRequest, context: RequestContext): void
+    }
+
+    class LogIngestionServiceImpl {
+        -RawLogProducer rawLogProducer
+        -DlqProducer dlqProducer
+        +ingest(request: LogIngestionRequest, context: RequestContext): void
+    }
+
+    class LogIngestionRequest {
+        -Instant timestamp
+        -String level
+        -String message
+        -String trace
+        Note: @NotNull timestamp, @NotBlank level max 20,\n@NotBlank message max 10000, trace optional max 100000
+    }
+
+    class RawLogEvent {
+        -String eventId
+        -String tenantId
+        -String serviceName
+        -String environment
+        -Instant receivedAt
+        -Instant logTimestamp
+        -String level
+        -String message
+        -String trace
+        Note: @Builder @Getter
+    }
+
+    class RequestContext {
+        -String tenantId
+        -String serviceName
+        -String environment
+        -String apiKey
+        Note: Immutable holder - extracted once per request
+    }
+
+    class RequestHeaderExtractor {
+        +extract(request: HttpServletRequest): RequestContext
+        -requireHeader(request: HttpServletRequest, name: String): String
+        Note: Throws IllegalArgumentException on missing header
+    }
+
+    class RawLogProducer {
+        -KafkaTemplate~String, RawLogEvent~ kafkaTemplate
+        -DlqProducer dlqProducer
+        +publish(event: RawLogEvent): void
+        Note: key = tenantId\nDLQ on async callback failure
+    }
+
+    class DlqProducer {
+        -KafkaTemplate~String, DlqEvent~ kafkaTemplate
+        +publish(key: String, event: DlqEvent): void
+    }
+
+    class DlqEvent {
+        -Object originalEvent
+        -String errorMessage
+        -String failedAt
+        -Instant failedAtTs
+        Note: @Builder @Getter
+    }
+
+    class GlobalExceptionHandler {
+        +handleValidationException(ex: MethodArgumentNotValidException): ResponseEntity
+        +handleIllegalArgumentException(ex: IllegalArgumentException): ResponseEntity
+        +handleGenericException(ex: Exception): ResponseEntity
+    }
+
+    class ErrorResponse {
+        -String error
+        -List~String~ details
+    }
+
+    class KafkaProducerConfig {
+        +rawLogProducerFactory(): ProducerFactory~String, RawLogEvent~
+        +rawLogKafkaTemplate(): KafkaTemplate~String, RawLogEvent~
+        +dlqProducerFactory(): ProducerFactory~String, DlqEvent~
+        +dlqKafkaTemplate(): KafkaTemplate~String, DlqEvent~
+        Note: acks=all, retries=3,\nenable.idempotence=true, linger.ms=5
+    }
+
+    class RawLogEventSerializer {
+        -ObjectMapper objectMapper
+        +serialize(topic: String, data: RawLogEvent): byte[]
+        Note: Uses tools.jackson 3.x (Jackson 3)\nnot com.fasterxml.jackson
+    }
+
+    class DlqEventSerializer {
+        -ObjectMapper objectMapper
+        +serialize(topic: String, data: DlqEvent): byte[]
+        Note: Uses com.fasterxml.jackson 2.x
+    }
+
+    LogIngestionController --> LogIngestionService
+    LogIngestionController --> RequestHeaderExtractor
+    LogIngestionServiceImpl ..|> LogIngestionService
+    LogIngestionServiceImpl --> RawLogProducer
+    LogIngestionServiceImpl --> RawLogEvent : builds
+    RequestHeaderExtractor --> RequestContext : creates
+    RawLogProducer --> RawLogEvent
+    RawLogProducer --> DlqProducer : on failure
+    DlqProducer --> DlqEvent
+    GlobalExceptionHandler --> ErrorResponse
+    KafkaProducerConfig --> RawLogEventSerializer
+    KafkaProducerConfig --> DlqEventSerializer
+```
+
+**Note on the two Jackson versions:** `RawLogEventSerializer` uses `tools.jackson` (Jackson 3.x, co-packaged with Spring Boot 4.0.2), while `DlqEventSerializer` uses `com.fasterxml.jackson` (Jackson 2.x). This is intentional - full control over each serializer's behavior without relying on Spring's auto-configuration to manage both.
+
+---
+
+## Normalization Service
+
+**Responsibility:** Consume `RawLogEvents` from Kafka, transform them into a canonical schema, generate a deterministic fingerprint, and publish `NormalizedLogEvents` to the next topic. Also writes every normalized event to ClickHouse for historical storage.
+
+**Key design decisions:**
+- Manual Kafka acknowledgment - offset committed only after successful publish *or* DLQ fallback. The partition never blocks.
+- `FingerprintGenerator` is designed as a separate `@Component` so it can be unit-tested independently of the normalization pipeline.
+- `schemaVersion: "v1"` field on every event enables future schema evolution without breaking existing consumers.
+
+```mermaid
+classDiagram
+    class RawLogConsumer {
+        -LogNormalizer normalizer
+        -NormalizedLogProducer producer
+        -DlqProducer dlqProducer
+        +consume(event: RawLogEvent, ack: Acknowledgment): void
+        Note: @KafkaListener topics=raw-logs\ngroup=normalisation-service\nManual ACK mode
+    }
+
+    class LogNormalizer {
+        -FingerprintGenerator fingerprintGenerator
+        +normalize(raw: RawLogEvent): NormalizedLogEvent
+        -resolveTimestamp(raw: RawLogEvent): Instant
+        -normalizeLevel(level: String): String
+        -normalizeMessage(message: String): String
+        -extractAttributes(raw: RawLogEvent): Map~String, Object~
+        -buildMessageTemplate(message: String): String
+        Note: extractAttributes currently returns empty HashMap\nbuildMessageTemplate delegates to FingerprintGenerator
+    }
+
+    class FingerprintGenerator {
+        -Pattern UUID_PATTERN
+        -Pattern NUMBER_PATTERN
+        -Pattern IP_PATTERN
+        +generate(service: String, template: String, exceptionType: String, stackTrace: String): String
+        -extractFirstFrame(stackTrace: String): String
+        -sha256(input: String): String
+        -safe(s: String): String
+        Note: ⚠️ STUB - methods not yet implemented\nUUID_PATTERN regex is malformed\nSee ROADMAP Phase 3
+    }
+
+    class NormalizedLogEvent {
+        -String eventId
+        -String tenantId
+        -String serviceName
+        -String environment
+        -Instant timestamp
+        -String level
+        -String message
+        -String messageTemplate
+        -String fingerprint
+        -Map~String, Object~ attributes
+        -String traceId
+        -String schemaVersion
+        Note: @Builder @Getter\nschemaVersion fixed at v1\nfingerprint and messageTemplate pending FingerprintGenerator
+    }
+
+    class RawLogEvent {
+        -String eventId
+        -String tenantId
+        -String serviceName
+        -String environment
+        -Instant receivedAt
+        -Instant logTimestamp
+        -String level
+        -String message
+        -String trace
+        Note: @Data - deserialization target\nMirrored from ingestion-gateway DTO
+    }
+
+    class NormalizedLogProducer {
+        -KafkaTemplate~String, NormalizedLogEvent~ kafkaTemplate
+        +publish(event: NormalizedLogEvent): void
+        Note: key = tenantId
+    }
+
+    class DlqProducer {
+        -KafkaTemplate~String, DlqEvent~ kafkaTemplate
+        +publish(key: String, event: DlqEvent): void
+    }
+
+    class KafkaConsumerConfig {
+        +consumerFactory(): ConsumerFactory~String, RawLogEvent~
+        +kafkaListenerContainerFactory(): ConcurrentKafkaListenerContainerFactory
+        Note: enable-auto-commit: false\nack-mode: MANUAL\ngroup: normalisation-service
+    }
+
+    class RawLogEventDeserializer {
+        -ObjectMapper objectMapper
+        +deserialize(topic: String, data: byte[]): RawLogEvent
+        Note: Uses com.fasterxml.jackson 2.x\nThrows SerializationException on failure
+    }
+
+    class NormalizedLogEventSerializer {
+        -ObjectMapper objectMapper
+        +serialize(topic: String, data: NormalizedLogEvent): byte[]
+        Note: Uses com.fasterxml.jackson 2.x
+    }
+
+    RawLogConsumer --> LogNormalizer
+    RawLogConsumer --> NormalizedLogProducer
+    RawLogConsumer --> DlqProducer
+    RawLogConsumer --> RawLogEvent : consumes
+    LogNormalizer --> FingerprintGenerator
+    LogNormalizer --> NormalizedLogEvent : produces
+    NormalizedLogProducer --> NormalizedLogEvent
+    KafkaConsumerConfig --> RawLogEventDeserializer
+```
+
+**Current stub:** `FingerprintGenerator` contains only a malformed `UUID_PATTERN` regex and no methods. Until it is implemented, `NormalizedLogEvent.fingerprint` and `NormalizedLogEvent.messageTemplate` remain null. This blocks the Clustering Service, which groups by fingerprint. Implementing `FingerprintGenerator` is the next critical path item.
+
+---
+
+## Incident Service
+
+**Responsibility:** Consume `IncidentEvents`, maintain the incident lifecycle in PostgreSQL, enforce valid state transitions, trigger AI summary generation, and publish `NotificationEvents`. Also exposes a REST API for the web frontend and Slack interaction handler.
+
+```mermaid
+classDiagram
+    class IncidentController {
+        -IncidentService incidentService
+        +listIncidents(tenantId: String, filters: IncidentFilters): ResponseEntity~Page~Incident~~
+        +getIncident(incidentId: UUID): ResponseEntity~Incident~
+        +assignIncident(incidentId: UUID, request: AssignRequest): ResponseEntity~Void~
+        +acknowledgeIncident(incidentId: UUID): ResponseEntity~Void~
+        +resolveIncident(incidentId: UUID): ResponseEntity~Void~
+    }
+
+    class IncidentService {
+        -IncidentRepository incidentRepository
+        -AssignmentRepository assignmentRepository
+        -StateHistoryRepository stateHistoryRepository
+        -AISummaryService aiSummaryService
+        -NotificationEventPublisher notificationPublisher
+        +createOrUpdateIncident(event: IncidentEvent): Incident
+        +assignIncident(id: UUID, assignedTo: UUID, assignedBy: UUID, note: String): void
+        +acknowledgeIncident(id: UUID, userId: UUID): void
+        +resolveIncident(id: UUID, userId: UUID): void
+        +getIncident(id: UUID, tenantId: UUID): Incident
+        +listIncidents(tenantId: UUID, filters: IncidentFilters, pageable: Pageable): Page~Incident~
+    }
+
+    class IncidentStateMachine {
+        +transition(current: IncidentStatus, target: IncidentStatus): boolean
+        +allowedTransitions(): Map~IncidentStatus, Set~IncidentStatus~~
+        Note: NEW → ASSIGNED\nASSIGNED → ACKNOWLEDGED or ASSIGNED\nACKNOWLEDGED → RESOLVED\nRESOLVED → NEW
+    }
+
+    class Incident {
+        -UUID incidentId
+        -UUID tenantId
+        -String fingerprint
+        -String serviceName
+        -String environment
+        -Severity severity
+        -IncidentStatus status
+        -Long occurrenceCount
+        -Instant firstSeenAt
+        -Instant lastSeenAt
+        -Instant resolvedAt
+        -String aiSummary
+        -Instant createdAt
+        -Instant updatedAt
+    }
+
+    class IncidentAssignment {
+        -UUID assignmentId
+        -UUID incidentId
+        -UUID assignedToUserId
+        -UUID assignedByUserId
+        -Instant assignedAt
+        -String notes
+    }
+
+    class IncidentStateHistory {
+        -UUID historyId
+        -UUID incidentId
+        -IncidentStatus fromStatus
+        -IncidentStatus toStatus
+        -UUID changedByUserId
+        -Instant changedAt
+    }
+
+    class IncidentStatus {
+        <<enumeration>>
+        NEW
+        ASSIGNED
+        ACKNOWLEDGED
+        RESOLVED
+    }
+
+    class Severity {
+        <<enumeration>>
+        CRITICAL
+        HIGH
+        MEDIUM
+        LOW
+    }
+
+    class IncidentConsumer {
+        -IncidentService incidentService
+        +consume(event: IncidentEvent, ack: Acknowledgment): void
+    }
+
+    class AISummaryService {
+        -LLMClient llmClient
+        -RedisCache summaryCache
+        +generateSummary(incident: Incident): String
+        -buildPrompt(incident: Incident, topMessages: List~String~): String
+        Note: Async - does not block notification\nCaches result in Redis TTL=1h\ntemperature=0.2, max_tokens=300
+    }
+
+    IncidentController --> IncidentService
+    IncidentService --> IncidentStateMachine
+    IncidentService --> Incident
+    IncidentService --> IncidentAssignment
+    IncidentService --> IncidentStateHistory
+    IncidentService --> AISummaryService
+    Incident --> IncidentStatus
+    Incident --> Severity
+    IncidentConsumer --> IncidentService
+```
+
+---
+
+## Notification Service
+
+**Responsibility:** Consume `NotificationEvents` and deliver them to Slack and WhatsApp. Handle Slack interaction callbacks (button clicks, modal submissions) and route them back to the Incident Service.
+
+The Notification Service is the only service with an inbound HTTP endpoint that is not triggered by a client. Slack calls its interaction webhook when users interact with buttons or submit modals.
+
+```mermaid
+classDiagram
+    class NotificationConsumer {
+        -SlackNotifier slackNotifier
+        -WhatsAppNotifier whatsAppNotifier
+        +consume(event: NotificationEvent, ack: Acknowledgment): void
+        Note: Routes by NotificationType:\nINCIDENT_CREATED → Slack channel alert\nINCIDENT_ASSIGNED → DM + channel update\nINCIDENT_RESOLVED → channel update
+    }
+
+    class NotificationEvent {
+        -String tenantId
+        -String incidentId
+        -String fingerprint
+        -String serviceName
+        -Severity severity
+        -String aiSummary
+        -Long occurrenceCount
+        -String status
+        -String assignedToUserId
+        -NotificationType type
+    }
+
+    class NotificationType {
+        <<enumeration>>
+        INCIDENT_CREATED
+        INCIDENT_ASSIGNED
+        INCIDENT_RESOLVED
+    }
+
+    class SlackNotifier {
+        -SlackClient slackClient
+        -SlackIntegrationRepository integrationRepo
+        +sendIncidentAlert(event: NotificationEvent, tenantId: String): void
+        +sendDirectMessage(userId: String, message: String): void
+        +updateMessage(channelId: String, messageTs: String, blocks: List~Block~): void
+        -buildAlertBlocks(event: NotificationEvent): List~Block~
+        Note: Block Kit layout - header, fields, actions\nButtons: Assign Engineer, View Logs
+    }
+
+    class SlackInteractionController {
+        -SlackInteractionHandler handler
+        +handleInteraction(payload: String): ResponseEntity~Void~
+        Note: Slack calls this on button click or modal submit\nPOST /api/v1/slack/interactions
+    }
+
+    class SlackInteractionHandler {
+        -IncidentServiceClient incidentClient
+        -SlackNotifier slackNotifier
+        +handleBlockAction(payload: BlockActionPayload): void
+        +handleViewSubmission(payload: ViewSubmissionPayload): void
+        -handleAssignAction(payload): void
+        -handleAcknowledgeAction(payload): void
+    }
+
+    class WhatsAppNotifier {
+        -WhatsAppClient whatsAppClient
+        +sendAlert(phoneNumber: String, message: String): void
+        -buildAlertMessage(event: NotificationEvent): String
+        Note: Alert-only - no interactive callbacks
+    }
+
+    NotificationConsumer --> SlackNotifier
+    NotificationConsumer --> WhatsAppNotifier
+    NotificationConsumer --> NotificationEvent
+    SlackInteractionController --> SlackInteractionHandler
+    SlackInteractionHandler --> SlackNotifier
+    NotificationEvent --> NotificationType
+```
+
+---
+
+## Kafka Event Schemas
+
+Every message flowing through the Kafka pipeline is a typed event. This diagram shows the transformation pipeline and the inheritance/evolution relationships between event types.
+
+```mermaid
+classDiagram
+    class RawLogEvent {
+        +String eventId
+        +String tenantId
+        +String serviceName
+        +String environment
+        +Instant receivedAt
+        +Instant logTimestamp
+        +String level
+        +String message
+        +String trace
+        Note: Published by Ingestion Gateway\nTopic: raw-logs\nKey: tenantId
+    }
+
+    class NormalizedLogEvent {
+        +String eventId
+        +String tenantId
+        +String serviceName
+        +String environment
+        +Instant timestamp
+        +String level
+        +String message
+        +String messageTemplate
+        +String fingerprint
+        +Map~String, Object~ attributes
+        +String traceId
+        +String schemaVersion
+        Note: Published by Normalization Service\nTopic: normalized-logs\nKey: tenantId\nschemaVersion v1
+    }
+
+    class IncidentEvent {
+        +String tenantId
+        +String fingerprint
+        +String serviceName
+        +String environment
+        +Severity severity
+        +Long occurrenceCount
+        +Instant firstSeenAt
+        +Instant lastSeenAt
+        +List~String~ topMessages
+        Note: Published by Clustering Service\nTopic: incident-events\nKey: tenantId
+    }
+
+    class NotificationEvent {
+        +String tenantId
+        +String incidentId
+        +String fingerprint
+        +Severity severity
+        +String aiSummary
+        +Long occurrenceCount
+        +NotificationType type
+        +String assignedToUserId
+        Note: Published by Incident Service\nTopic: notification-events\nKey: incidentId
+    }
+
+    class DlqEvent {
+        +Object originalEvent
+        +String errorMessage
+        +String failedAt
+        +Instant failedAtTs
+        Note: Published by any service on failure\nTopic: raw-logs-dlq\nKey: eventId\nWraps any event type
+    }
+
+    RawLogEvent ..> NormalizedLogEvent : normalized into
+    NormalizedLogEvent ..> IncidentEvent : clustered into
+    IncidentEvent ..> NotificationEvent : triggers
+    RawLogEvent ..> DlqEvent : wrapped on failure
+    NormalizedLogEvent ..> DlqEvent : wrapped on failure
+```
+
+**Schema evolution:** The `schemaVersion` field on `NormalizedLogEvent` is intentional. When the normalization schema needs to change (new fields, changed types), consumers can branch on `schemaVersion` to handle both old and new formats during a rolling deployment.
+
+---
+
+## PostgreSQL Data Model
+
+This is the full relational schema for the incident management database. Every table is scoped to a `tenant_id` - there are no cross-tenant joins.
+
+```mermaid
+erDiagram
+    TENANT {
+        uuid tenant_id PK
+        varchar name
+        varchar status
+        varchar plan
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    USER {
+        uuid user_id PK
+        uuid tenant_id FK
+        varchar email
+        varchar password_hash
+        varchar role
+        varchar slack_user_id
+        varchar whatsapp_number
+        timestamp created_at
+    }
+
+    API_KEY {
+        uuid key_id PK
+        uuid tenant_id FK
+        varchar key_hash
+        varchar name
+        boolean is_active
+        timestamp created_at
+        timestamp expires_at
+    }
+
+    INCIDENT {
+        uuid incident_id PK
+        uuid tenant_id FK
+        varchar fingerprint
+        varchar service_name
+        varchar environment
+        varchar severity
+        varchar status
+        bigint occurrence_count
+        timestamp first_seen_at
+        timestamp last_seen_at
+        timestamp resolved_at
+        text ai_summary
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    INCIDENT_ASSIGNMENT {
+        uuid assignment_id PK
+        uuid incident_id FK
+        uuid assigned_to_user_id FK
+        uuid assigned_by_user_id FK
+        timestamp assigned_at
+        text notes
+    }
+
+    INCIDENT_STATE_HISTORY {
+        uuid history_id PK
+        uuid incident_id FK
+        varchar from_status
+        varchar to_status
+        uuid changed_by_user_id FK
+        timestamp changed_at
+    }
+
+    SLACK_INTEGRATION {
+        uuid integration_id PK
+        uuid tenant_id FK
+        varchar workspace_id
+        varchar channel_id
+        varchar bot_token
+        boolean is_active
+        timestamp connected_at
+    }
+
+    WHATSAPP_INTEGRATION {
+        uuid integration_id PK
+        uuid tenant_id FK
+        varchar sender_number
+        varchar provider
+        boolean is_active
+    }
+
+    USAGE_METRICS {
+        uuid metric_id PK
+        uuid tenant_id FK
+        date metric_date
+        bigint logs_ingested
+        bigint incidents_created
+        bigint slack_sent
+        bigint whatsapp_sent
+    }
+
+    TENANT ||--o{ USER : has
+    TENANT ||--o{ API_KEY : owns
+    TENANT ||--o{ INCIDENT : has
+    TENANT ||--|| SLACK_INTEGRATION : configures
+    TENANT ||--|| WHATSAPP_INTEGRATION : configures
+    TENANT ||--o{ USAGE_METRICS : tracks
+    INCIDENT ||--o{ INCIDENT_ASSIGNMENT : has
+    INCIDENT ||--o{ INCIDENT_STATE_HISTORY : tracks
+    USER ||--o{ INCIDENT_ASSIGNMENT : assigned_to
+    USER ||--o{ INCIDENT_ASSIGNMENT : assigned_by
+    USER ||--o{ INCIDENT_STATE_HISTORY : changes
+```
+
+**Design notes:**
+
+- **`INCIDENT.fingerprint` is not a foreign key** - it's a string hash. The fingerprint is the primary grouping mechanism in the Clustering Service, not a relational concept. Keeping it as a string makes querying flexible and avoids coupling the incident model to the normalization schema.
+
+- **`INCIDENT_ASSIGNMENT` is an append-only table** - each reassignment creates a new row. This preserves the full assignment history. The "current assignee" is the row with the most recent `assigned_at`.
+
+- **`INCIDENT_STATE_HISTORY` is an audit table** - it captures every status transition with the actor and timestamp. This supports SLA tracking, post-incident review, and compliance reporting.
+
+- **`USAGE_METRICS` is a daily rollup** - it tracks billing-relevant metrics (logs ingested, incidents created, notifications sent) aggregated per tenant per day. This is the SaaS billing foundation.
+
+---
+
+## ClickHouse Log Events Schema
+
+ClickHouse stores every normalized log event. It is optimized for analytical queries - specifically the `GROUP BY fingerprint` query used to build AI summary prompts, and time-range queries for the log explorer UI.
+
+```mermaid
+erDiagram
+    LOG_EVENTS {
+        UUID event_id
+        UUID tenant_id
+        String service_name
+        String environment
+        DateTime64 timestamp
+        String level
+        String message
+        String message_template
+        String fingerprint
+        String trace_id
+        String schema_version
+        Map_String_String attributes
+        DateTime64 ingested_at
+    }
+```
+
+**Why ClickHouse instead of PostgreSQL for logs?**
+
+PostgreSQL is optimized for transactional workloads - row-level inserts, point lookups, relational joins. ClickHouse is a columnar database optimized for aggregation queries over large volumes of data.
+
+The AI summary query (`GROUP BY message ORDER BY COUNT(*) DESC`) runs over potentially millions of rows per fingerprint. On PostgreSQL, this is a full table scan. On ClickHouse, it reads only the `fingerprint`, `message`, and `tenant_id` columns - a fraction of the data - and executes in milliseconds.
+
+**Schema notes:**
+
+- `DateTime64` - nanosecond precision timestamp. Log correlation across distributed services requires sub-millisecond timestamp accuracy.
+- `attributes: Map(String, String)` - a flexible key-value store for structured log fields that don't fit the fixed schema (request ID, user ID, correlation ID, etc.). ClickHouse's native Map type enables filtering on arbitrary attributes without schema migrations.
+- `message_template` and `fingerprint` are stored alongside the raw `message` - this enables queries like "show me all distinct messages for this incident" (raw) as well as "how many incidents share this pattern" (fingerprint).
+- `ingested_at` is the time the event entered ClickHouse, separate from `timestamp` (the time the log was emitted). The difference between these two values is the pipeline latency - a useful operational metric.

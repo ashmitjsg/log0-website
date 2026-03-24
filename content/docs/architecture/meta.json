@@ -1,0 +1,10 @@
+{
+  "title": "Architecture",
+  "pages": [
+    "index",
+    "high-level-system-architecture",
+    "flow-diagrams",
+    "lld-uml",
+    "decisions"
+  ]
+}
