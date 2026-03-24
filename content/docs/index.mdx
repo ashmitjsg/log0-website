@@ -5,7 +5,7 @@ description: log0 is a multi-tenant log intelligence and incident management pla
 
 ## What is log0?
 
-log0 is a backend-first SaaS platform for engineering teams drowning in log noise. It ingests application logs from distributed services, groups similar errors into incidents using deterministic fingerprinting, and routes them to the owning engineer via Slack — with AI-generated summaries attached at creation.
+log0 is a backend-first SaaS platform for engineering teams drowning in log noise. It ingests application logs from distributed services, groups similar errors into incidents using deterministic fingerprinting, and routes them to the owning engineer via Slack - with AI-generated summaries attached at creation.
 
 Think: **SigNoz + PagerDuty**, designed from the ground up for multi-tenant use.
 
@@ -17,9 +17,9 @@ Modern microservice teams face three compounding failures:
 
 | Failure | log0's answer |
 |---|---|
-| **Alert fatigue** — 10,000 error logs for the same root cause | Fingerprinting + clustering → 1 incident |
-| **Unclear ownership** — an alert fires, nobody knows who owns it | Slack-native assignment with engineer selection modal |
-| **Slow root cause** — engineers manually correlate logs across services | AI summary attached at incident creation, before the engineer opens a terminal |
+| **Alert fatigue** - 10,000 error logs for the same root cause | Fingerprinting + clustering → 1 incident |
+| **Unclear ownership** - an alert fires, nobody knows who owns it | Slack-native assignment with engineer selection modal |
+| **Slow root cause** - engineers manually correlate logs across services | AI summary attached at incident creation, before the engineer opens a terminal |
 
 ---
 
@@ -42,7 +42,7 @@ curl -X POST http://localhost:8080/api/v1/logs \
   }'
 ```
 
-A `202 Accepted` response means the log was received and published to Kafka. The normalization, clustering, and incident pipeline runs asynchronously — your service is never blocked waiting for it.
+A `202 Accepted` response means the log was received and published to Kafka. The normalization, clustering, and incident pipeline runs asynchronously - your service is never blocked waiting for it.
 
 ---
 
@@ -50,7 +50,7 @@ A `202 Accepted` response means the log was received and published to Kafka. The
 
 <Cards>
   <Card title="Architecture" href="/docs/architecture">
-    How the platform is built — system context, all six services, Kafka event pipeline, storage layers, and the design decisions behind every choice.
+    How the platform is built - system context, all six services, Kafka event pipeline, storage layers, and the design decisions behind every choice.
   </Card>
   <Card title="Flow Diagrams" href="/docs/architecture/flow-diagrams">
     What happens at runtime. Traced through a concrete scenario: a payment service error storm from first HTTP request to Slack notification.

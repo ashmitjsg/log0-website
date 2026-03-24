@@ -272,35 +272,35 @@ sequenceDiagram
     participant PostgreSQL
     participant Engineer
 
-    Note over Admin,Slack: 🚨 Incident alert arrives in #incidents channel
+    Note over Admin,Slack: Incident alert arrives in #incidents channel
 
-    Admin->>Slack: Sees CRITICAL alert\nClicks "Assign Engineer"
-    Slack->>NotifService: POST /api/v1/slack/interactions\n{type: "block_actions"\naction_id: "assign_engineer"\nincident_id: "inc_xxx"}
+    Admin->>Slack: Clicks Assign Engineer on the incident alert
+    Slack->>NotifService: POST /slack/interactions (block_actions: assign_engineer, incident: inc_xxx)
     NotifService->>IncidentService: GET /api/v1/users?tenantId=acme-corp&role=ENGINEER
-    IncidentService->>PostgreSQL: SELECT user_id, name, slack_user_id\nFROM users\nWHERE tenant_id = 'acme-corp'\nAND role = 'ENGINEER'
-    PostgreSQL-->>IncidentService: [{name: "Rahul", slackUserId: "U123"}\n{name: "Priya", slackUserId: "U456"}]
+    IncidentService->>PostgreSQL: SELECT users WHERE tenant_id=acme-corp AND role=ENGINEER
+    PostgreSQL-->>IncidentService: [{name: Rahul, slackUserId: U123}, {name: Priya, slackUserId: U456}]
     IncidentService-->>NotifService: engineer list
-    NotifService->>Slack: views.open - engineer selection modal\nwith dropdown + notes field
+    NotifService->>Slack: views.open - engineer dropdown modal with notes field
     Slack-->>Admin: Modal opens with engineer list
 
-    Admin->>Slack: Selects "Rahul" from dropdown\nNote: "Check gateway logs - looks like env var missing"\nClicks Submit
-    Slack->>NotifService: POST /api/v1/slack/interactions\n{type: "view_submission"\nselected_user: "U123"\nnote: "Check gateway logs..."}
-    NotifService->>IncidentService: PATCH /api/v1/incidents/inc_xxx/assign\n{assignedTo: "U123", note: "..."}
-    IncidentService->>PostgreSQL: UPDATE incidents SET status='ASSIGNED'\nINSERT incident_assignments (assigned_to, assigned_by, notes)\nINSERT incident_state_history (NEW → ASSIGNED)
+    Admin->>Slack: Selects Rahul, adds note: check gateway logs, clicks Submit
+    Slack->>NotifService: POST /slack/interactions (view_submission: selected_user=U123)
+    NotifService->>IncidentService: PATCH /api/v1/incidents/inc_xxx/assign (assignedTo: U123)
+    IncidentService->>PostgreSQL: UPDATE status=ASSIGNED, INSERT assignment row, INSERT state_history row
     PostgreSQL-->>IncidentService: OK
     IncidentService-->>NotifService: incident updated
 
-    NotifService->>Slack: chat.update - update channel message\n"👤 Assigned to: @Rahul at 10:16 IST"
-    NotifService->>Slack: chat.postMessage - DM to Rahul\n"🚨 You've been assigned: payment-service / CRITICAL"
-    NotifService->>Engineer: Optional WhatsApp\n"Payment incident assigned to you - check Slack"
+    NotifService->>Slack: chat.update - Assigned to @Rahul at 10:16 IST
+    NotifService->>Slack: chat.postMessage - DM to Rahul: incident assigned
+    NotifService->>Engineer: Optional WhatsApp alert
 
     Note over Engineer,Slack: Engineer investigates, then acknowledges
 
-    Engineer->>Slack: Clicks "Acknowledge" button on incident message
-    Slack->>NotifService: POST /api/v1/slack/interactions\n{type: "block_actions"\naction_id: "acknowledge"\nincident_id: "inc_xxx"}
+    Engineer->>Slack: Clicks Acknowledge button on incident message
+    Slack->>NotifService: POST /slack/interactions (block_actions: acknowledge, incident: inc_xxx)
     NotifService->>IncidentService: PATCH /api/v1/incidents/inc_xxx/acknowledge
-    IncidentService->>PostgreSQL: UPDATE incidents SET status='ACKNOWLEDGED'\nINSERT incident_state_history (ASSIGNED → ACKNOWLEDGED)
-    NotifService->>Slack: chat.update - "✅ Acknowledged by @Rahul at 10:19 IST"
+    IncidentService->>PostgreSQL: UPDATE status=ACKNOWLEDGED, INSERT state_history row
+    NotifService->>Slack: chat.update - Acknowledged by @Rahul at 10:19 IST
 ```
 
 The entire assignment workflow - from alert to acknowledgment - happens without leaving Slack. Engineers do not need access to the web UI to handle incidents. The web UI exists for search, filtering, historical review, and bulk operations.
@@ -321,22 +321,22 @@ sequenceDiagram
     participant PROD as RawLogProducer
     participant K as Kafka (raw-logs)
 
-    SVC->>CTL: POST /api/v1/logs\nHeaders:\n  X-TENANT-ID: acme-corp\n  X-SERVICE-NAME: payment-service\n  X-ENVIRONMENT: production\n  X-API-KEY: ak_live_xxxx\nBody: {timestamp, level, message, trace}
+    SVC->>CTL: POST /api/v1/logs (X-TENANT-ID: acme-corp, X-SERVICE-NAME: payment-service, X-API-KEY: ak_xxxx)
 
     CTL->>RHE: extractContext(HttpServletRequest)
-    RHE->>RHE: requireHeader("X-TENANT-ID") → "acme-corp"\nrequireHeader("X-SERVICE-NAME") → "payment-service"\nrequireHeader("X-ENVIRONMENT") → "production"\nrequireHeader("X-API-KEY") → "ak_live_xxxx"
-    RHE->>RC: new RequestContext(\n  tenantId = "acme-corp"\n  serviceName = "payment-service"\n  environment = "production"\n  apiKey = "ak_live_xxxx"\n)
+    RHE->>RHE: requireHeader for X-TENANT-ID, X-SERVICE-NAME, X-ENVIRONMENT, X-API-KEY
+    RHE->>RC: new RequestContext(tenantId=acme-corp, serviceName=payment-service, environment=production)
     RC-->>CTL: RequestContext
 
     CTL->>SVC2: ingest(logRequest, context)
-    SVC2->>SVC2: RawLogEvent.builder()\n  .eventId(UUID.randomUUID().toString())\n  .tenantId("acme-corp")\n  .serviceName("payment-service")\n  .environment("production")\n  .receivedAt(Instant.now())\n  .logTimestamp(request.getTimestamp())\n  .level("ERROR")\n  .message("Connection timeout...")\n  .trace("at PaymentProcessor.charge:142")\n  .build()
+    SVC2->>SVC2: Build RawLogEvent — eventId=UUID, tenantId=acme-corp, receivedAt=Instant.now()
 
     SVC2->>PROD: publish(rawLogEvent)
-    PROD->>K: kafkaTemplate.send(\n  topic = "raw-logs"\n  key = "acme-corp"       ← tenantId as Kafka key\n  value = rawLogEvent\n)
+    PROD->>K: kafkaTemplate.send(topic=raw-logs, key=acme-corp, value=rawLogEvent)
     K-->>PROD: RecordMetadata (async callback)
     PROD-->>SVC2: void
     SVC2-->>CTL: void
-    CTL-->>SVC: HTTP 202 Accepted\n{"eventId": "a1b2c3..."}
+    CTL-->>SVC: HTTP 202 Accepted — eventId: a1b2c3...
 ```
 
 The `RequestHeaderExtractor.requireHeader()` method throws an `IllegalArgumentException` if any required header is missing or blank. The `GlobalExceptionHandler` catches this and returns a `400 Bad Request` with a structured error body. Tenant context is never assumed - it must be explicitly supplied on every request.
@@ -398,24 +398,24 @@ sequenceDiagram
     participant LLM as Azure OpenAI (GPT-4o)
     participant PG as PostgreSQL
 
-    IS->>AIS: generateSummary(incident)\n[async - does not block notification]
+    IS->>AIS: generateSummary(incident) — async, does not block notification
 
     AIS->>Cache: GET summary:incident:{incidentId}
     Cache-->>AIS: MISS
 
-    AIS->>CH: SELECT message, COUNT(*) as cnt\nFROM log_events\nWHERE fingerprint = 'a3f8c2...'\nAND tenant_id = 'acme-corp'\nGROUP BY message\nORDER BY cnt DESC\nLIMIT 10
-    CH-->>AIS: top 10 most frequent messages\nwith occurrence counts
+    AIS->>CH: SELECT message, COUNT(*) FROM log_events WHERE fingerprint=a3f8c2 AND tenant_id=acme-corp GROUP BY message LIMIT 10
+    CH-->>AIS: top 10 most frequent messages with occurrence counts
 
-    AIS->>AIS: Build prompt:\n  System: "You are an SRE assistant. Summarize\n  this incident concisely for an on-call engineer."\n  User: "Service: payment-service\n  Environment: production\n  Occurrences: 2400\n  Time range: 10:12 – 10:15 IST\n  Top errors:\n  - Connection timeout to payment-gateway after 30000ms (1847)\n  - Connection timeout to payment-gateway after 28514ms (312)\n  - Connection timeout to payment-gateway after 31003ms (241)"
+    AIS->>AIS: Build prompt — service, occurrences, time range, top 10 error messages
 
-    AIS->>LLM: POST /chat/completions\n{model: "gpt-4o"\ntemperature: 0.2\nmax_tokens: 300}
-    LLM-->>AIS: "The payment processor is failing to establish a\nconnection to the downstream payment gateway.\nThe consistent timeout (30000ms) across 2,400\nrequests suggests the gateway is unreachable...\nLikely cause: misconfigured PAYMENT_GATEWAY_URL\nin the new deployment."
+    AIS->>LLM: POST /chat/completions (model=gpt-4o, temperature=0.2, max_tokens=300)
+    LLM-->>AIS: AI-generated summary paragraph
 
-    AIS->>Cache: SET summary:incident:{incidentId}\nTTL = 1 hour
-    AIS->>PG: UPDATE incidents\nSET ai_summary = '...'\nWHERE incident_id = 'inc_xxx'
+    AIS->>Cache: SET summary:incident:{incidentId} TTL=1h
+    AIS->>PG: UPDATE incidents SET ai_summary=... WHERE incident_id=inc_xxx
     AIS-->>IS: summary stored
 
-    Note over IS: Notification Service will edit\nthe Slack message to include\nthe summary once stored
+    Note over IS: Notification Service edits the Slack message once summary is ready
 ```
 
 **Why `temperature: 0.2`?** Low temperature produces deterministic, factual summaries. High temperature produces creative writing. An SRE reading a Slack alert at 2 AM needs the former.
