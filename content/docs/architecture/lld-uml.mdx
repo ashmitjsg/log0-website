@@ -168,7 +168,7 @@ classDiagram
         -NormalizedLogProducer producer
         -DlqProducer dlqProducer
         +consume(event: RawLogEvent, ack: Acknowledgment): void
-        Note: @KafkaListener topics=raw-logs\ngroup=normalisation-service\nManual ACK mode
+        Note: @KafkaListener topics=raw-logs\ngroup=normalization-service\nManual ACK mode
     }
 
     class LogNormalizer {
@@ -236,7 +236,7 @@ classDiagram
     class KafkaConsumerConfig {
         +consumerFactory(): ConsumerFactory~String, RawLogEvent~
         +kafkaListenerContainerFactory(): ConcurrentKafkaListenerContainerFactory
-        Note: enable-auto-commit: false\nack-mode: MANUAL\ngroup: normalisation-service
+        Note: enable-auto-commit: false\nack-mode: MANUAL\ngroup: normalization-service
     }
 
     class KafkaProducerConfig {

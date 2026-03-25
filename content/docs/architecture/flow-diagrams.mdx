@@ -76,7 +76,7 @@ flowchart TD
     B4 -->|Success| B5[Return 202 Accepted\neventId in response]
     B4 -->|Kafka unavailable| B6[Publish to raw-logs-dlq\nReturn 202 Accepted\npipeline is async]
 
-    B4 --> C[Normalization Service :8081\nConsumes raw-logs\ngroup: normalisation-service]
+    B4 --> C[Normalization Service :8081\nConsumes raw-logs\ngroup: normalization-service]
     C --> C1[LogNormalizer.normalize]
     C1 --> C2[resolveTimestamp\nnormalizeLevel uppercase\nnormalizeMessage trim]
     C2 --> C3[FingerprintGenerator\nbuildMessageTemplate - strip numbers IPs UUIDs\nSHA-256 hash of service+template+exception+stackFrame]
