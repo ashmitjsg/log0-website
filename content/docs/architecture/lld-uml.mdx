@@ -13,7 +13,7 @@ This section documents the internal structure of each service - the classes, the
 |---|---|---|
 | Ingestion Gateway | ✅ ~85% complete | REST API, Kafka producer, DLQ all working |
 | Normalization Service | ✅ ~80% complete | Normalization and fingerprinting complete; producer reliability config pending |
-| Clustering Service | Planned | Not yet started |
+| Clustering Service | 🔄 Designed | LLD complete; implementation next |
 | Incident Service | Planned | Not yet started |
 | Notification Service | Planned | Not yet started |
 | Auth Service | Planned | Not yet started |
@@ -269,6 +269,149 @@ classDiagram
     KafkaConsumerConfig --> RawLogEventDeserializer
     KafkaProducerConfig --> NormalizedLogEventSerializer
 ```
+
+---
+
+## Clustering Service
+
+**Responsibility:** Consume `NormalizedLogEvents` from Kafka, group them by fingerprint within a time window, and publish an `IncidentEvent` to `incident-events` when the occurrence threshold is crossed. Continues publishing updates on every subsequent match so the Incident Service can track `occurrenceCount` and `lastSeenAt` in real time.
+
+**Key design decisions:**
+- `OccurrenceStore` is an interface — `FingerprintClusterer` never touches storage directly. Swapping in-memory for Redis later requires changing one class, not the clusterer.
+- Tumbling window (fixed 5-min buckets) chosen over sliding window for MVP simplicity — a burst of errors will cross the threshold regardless of window style.
+- Threshold and window duration are externalised into `ClusteringConfig` so they can be tuned without a code change.
+- `topMessages` collected per window — capped at 10 distinct values. Used later by the AI Summary Service to build its prompt.
+
+```mermaid
+classDiagram
+    class NormalizedLogConsumer {
+        -FingerprintClusterer clusterer
+        -DlqProducer dlqProducer
+        +consume(event: NormalizedLogEvent, ack: Acknowledgment): void
+        Note: @KafkaListener topics=normalized-logs\ngroup=clustering-service\nManual ACK mode
+    }
+
+    class FingerprintClusterer {
+        -OccurrenceStore occurrenceStore
+        -IncidentEventProducer producer
+        -ClusteringConfig config
+        -SeverityResolver severityResolver
+        +cluster(event: NormalizedLogEvent): void
+        -buildClusterKey(event: NormalizedLogEvent): ClusterKey
+        -buildIncidentEvent(key: ClusterKey, window: OccurrenceWindow, event: NormalizedLogEvent): IncidentEvent
+        Note: Fires IncidentEvent at threshold (occurrence 10)\nKeeps firing on every subsequent event\nto update occurrenceCount + lastSeenAt in Incident Service
+    }
+
+    class OccurrenceStore {
+        <<interface>>
+        +increment(key: ClusterKey, message: String): OccurrenceWindow
+        +get(key: ClusterKey): OccurrenceWindow
+        Note: Interface — swap InMemoryOccurrenceStore for\nRedisOccurrenceStore without changing FingerprintClusterer
+    }
+
+    class InMemoryOccurrenceStore {
+        -ConcurrentHashMap~ClusterKey, OccurrenceWindow~ store
+        +increment(key: ClusterKey, message: String): OccurrenceWindow
+        +get(key: ClusterKey): OccurrenceWindow
+        Note: TODO future - replace with RedisOccurrenceStore\nfor counter persistence across restarts\nand shared state across multiple instances
+    }
+
+    class ClusterKey {
+        -String tenantId
+        -String fingerprint
+        -String windowBucket
+        Note: windowBucket = timestamp truncated to 5-min boundary\nTumbling window: 10:00 10:05 10:10...\nTODO future: extract WindowStrategy interface for sliding window support
+    }
+
+    class OccurrenceWindow {
+        -long count
+        -Instant firstSeenAt
+        -Instant lastSeenAt
+        -List~String~ topMessages
+        Note: topMessages capped at 10 distinct values\nUsed to build AI summary prompt in Phase 6
+    }
+
+    class ClusteringConfig {
+        -int occurrenceThreshold
+        -int windowDurationMinutes
+        -int maxTopMessages
+        Note: occurrenceThreshold default 10\nwindowDurationMinutes default 5\nmaxTopMessages default 10\nAll configurable via application.yml
+    }
+
+    class SeverityResolver {
+        +resolve(level: String): Severity
+        Note: ERROR or FATAL → HIGH\nWARN → MEDIUM\nINFO or DEBUG → LOW
+    }
+
+    class IncidentEvent {
+        -String tenantId
+        -String fingerprint
+        -String serviceName
+        -String environment
+        -Severity severity
+        -Long occurrenceCount
+        -Instant firstSeenAt
+        -Instant lastSeenAt
+        -List~String~ topMessages
+        Note: @Builder @Getter\nPublished to incident-events\nKey: tenantId
+    }
+
+    class IncidentEventProducer {
+        -KafkaTemplate~String, IncidentEvent~ kafkaTemplate
+        +publish(event: IncidentEvent): void
+        Note: key = tenantId
+    }
+
+    class DlqProducer {
+        -KafkaTemplate~String, DlqEvent~ kafkaTemplate
+        +publish(key: String, event: DlqEvent): void
+    }
+
+    class KafkaConsumerConfig {
+        +consumerFactory(): ConsumerFactory~String, NormalizedLogEvent~
+        +kafkaListenerContainerFactory(): ConcurrentKafkaListenerContainerFactory
+        Note: enable-auto-commit: false\nack-mode: MANUAL\ngroup: clustering-service
+    }
+
+    class KafkaProducerConfig {
+        +incidentEventProducerFactory(): ProducerFactory~String, IncidentEvent~
+        +incidentEventKafkaTemplate(): KafkaTemplate~String, IncidentEvent~
+        +dlqProducerFactory(): ProducerFactory~String, DlqEvent~
+        +dlqKafkaTemplate(): KafkaTemplate~String, DlqEvent~
+        Note: acks=all, retries=3,\nenable.idempotence=true
+    }
+
+    class NormalizedLogEventDeserializer {
+        -ObjectMapper objectMapper
+        +deserialize(topic: String, data: byte[]): NormalizedLogEvent
+        Note: Uses com.fasterxml.jackson 2.x
+    }
+
+    class IncidentEventSerializer {
+        -ObjectMapper objectMapper
+        +serialize(topic: String, data: IncidentEvent): byte[]
+        Note: Uses com.fasterxml.jackson 2.x
+    }
+
+    NormalizedLogConsumer --> FingerprintClusterer
+    NormalizedLogConsumer --> DlqProducer
+    FingerprintClusterer --> OccurrenceStore
+    FingerprintClusterer --> IncidentEventProducer
+    FingerprintClusterer --> SeverityResolver
+    FingerprintClusterer --> ClusterKey : creates
+    FingerprintClusterer --> IncidentEvent : builds
+    InMemoryOccurrenceStore ..|> OccurrenceStore
+    OccurrenceStore --> OccurrenceWindow : returns
+    KafkaConsumerConfig --> NormalizedLogEventDeserializer
+    KafkaProducerConfig --> IncidentEventSerializer
+    IncidentEventProducer --> IncidentEvent
+```
+
+**The `OccurrenceStore` interface is the upgrade seam.** When you need persistence or horizontal scaling, implement `RedisOccurrenceStore` and swap it in via Spring `@Primary`. `FingerprintClusterer` never changes.
+
+**The `ClusterKey` is what makes the tumbling window work.** Two events in the same 5-minute bucket produce the same key → same counter. An event in the next bucket gets a fresh counter. The bucket is computed as `timestamp.truncatedTo(ChronoUnit.MINUTES)` rounded down to the nearest 5 — e.g. 10:03 → `10:00`, 10:07 → `10:05`.
+
+**Sliding window upgrade path (future):** When accuracy across bucket boundaries matters, the upgrade involves four steps: (1) extract a `WindowStrategy` interface with `computeKey()` and `isExpired()` methods; (2) move the current bucket truncation logic into `TumblingWindowStrategy`; (3) implement `SlidingWindowStrategy` which stores a `List<Instant>` of per-event timestamps in `OccurrenceWindow` and evicts expired entries on each `increment()` call; (4) inject `WindowStrategy` into `OccurrenceStore` implementations. `FingerprintClusterer` requires no changes because it only talks to `OccurrenceStore`.
 
 ---
 
