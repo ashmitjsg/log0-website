@@ -12,8 +12,8 @@ This section documents the internal structure of each service - the classes, the
 | Service | Status | Notes |
 |---|---|---|
 | Ingestion Gateway | ✅ ~85% complete | REST API, Kafka producer, DLQ all working |
-| Normalization Service | ✅ ~80% complete | Normalization and fingerprinting complete; producer reliability config pending |
-| Clustering Service | 🔄 Designed | LLD complete; implementation next |
+| Normalization Service | ✅ ~80% complete | Normalization, fingerprinting, and producer reliability all complete |
+| Clustering Service | ✅ ~95% complete | Core pipeline implemented; Redis persistence and sliding window upgrade planned |
 | Incident Service | Planned | Not yet started |
 | Notification Service | Planned | Not yet started |
 | Auth Service | Planned | Not yet started |
@@ -148,7 +148,7 @@ classDiagram
     KafkaProducerConfig --> DlqEventSerializer
 ```
 
-**Note on the two Jackson versions:** `RawLogEventSerializer` uses `tools.jackson` (Jackson 3.x, co-packaged with Spring Boot 4.0.2), while `DlqEventSerializer` uses `com.fasterxml.jackson` (Jackson 2.x). This is intentional - full control over each serializer's behavior without relying on Spring's auto-configuration to manage both.
+**Note on the two Jackson versions:** `RawLogEventSerializer` uses `tools.jackson` (Jackson 3.x, co-packaged with Spring Boot 4.0.4), while `DlqEventSerializer` uses `com.fasterxml.jackson` (Jackson 2.x). This is intentional - full control over each serializer's behavior without relying on Spring's auto-configuration to manage both.
 
 ---
 
@@ -250,7 +250,7 @@ classDiagram
     class RawLogEventDeserializer {
         -ObjectMapper objectMapper
         +deserialize(topic: String, data: byte[]): RawLogEvent
-        Note: Uses com.fasterxml.jackson 2.x\nThrows SerializationException on failure
+        Note: Uses com.fasterxml.jackson 2.x\nThrows RuntimeException (IOException) on failure\nSerializationException removed in Spring Kafka 4.x
     }
 
     class NormalizedLogEventSerializer {
@@ -297,15 +297,13 @@ classDiagram
         -ClusteringConfig config
         -SeverityResolver severityResolver
         +cluster(event: NormalizedLogEvent): void
-        -buildClusterKey(event: NormalizedLogEvent): ClusterKey
-        -buildIncidentEvent(key: ClusterKey, window: OccurrenceWindow, event: NormalizedLogEvent): IncidentEvent
+        -buildIncidentEvent(event: NormalizedLogEvent, window: OccurrenceWindow): IncidentEvent
         Note: Fires IncidentEvent at threshold (occurrence 10)\nKeeps firing on every subsequent event\nto update occurrenceCount + lastSeenAt in Incident Service
     }
 
     class OccurrenceStore {
         <<interface>>
         +increment(key: ClusterKey, message: String): OccurrenceWindow
-        +get(key: ClusterKey): OccurrenceWindow
         Note: Interface — swap InMemoryOccurrenceStore for\nRedisOccurrenceStore without changing FingerprintClusterer
     }
 
@@ -339,8 +337,8 @@ classDiagram
     }
 
     class SeverityResolver {
-        +resolve(level: String): Severity
-        Note: ERROR or FATAL → HIGH\nWARN → MEDIUM\nINFO or DEBUG → LOW
+        +resolve(level: String): String
+        Note: ERROR or FATAL → HIGH\nWARN → MEDIUM\nINFO or DEBUG → LOW\nReturns String not enum to avoid coupling with Incident Service domain
     }
 
     class IncidentEvent {
@@ -348,7 +346,7 @@ classDiagram
         -String fingerprint
         -String serviceName
         -String environment
-        -Severity severity
+        -String severity
         -Long occurrenceCount
         -Instant firstSeenAt
         -Instant lastSeenAt
