@@ -215,7 +215,7 @@ stateDiagram-v2
 
     ACKNOWLEDGED --> RESOLVED : Engineer resolves\nvia web UI
 
-    RESOLVED --> NEW : Same fingerprint reoccurs\n(configurable: reopen or create new)
+    RESOLVED --> NEW : Same fingerprint reoccurs\nMVP: creates new incident\nFuture: configurable reopen
 
     ASSIGNED --> ASSIGNED : Reassigned to different engineer
 

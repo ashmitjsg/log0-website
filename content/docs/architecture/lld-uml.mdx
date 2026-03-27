@@ -14,8 +14,8 @@ This section documents the internal structure of each service - the classes, the
 | Ingestion Gateway | ✅ ~85% complete | REST API, Kafka producer, DLQ all working |
 | Normalization Service | ✅ ~80% complete | Normalization, fingerprinting, and producer reliability all complete |
 | Clustering Service | ✅ ~95% complete | Core pipeline implemented; Redis persistence and sliding window upgrade planned |
-| Incident Service | Planned | Not yet started |
-| Notification Service | Planned | Not yet started |
+| Incident Service | ✅ ~80% complete | Kafka consumer, state machine, REST API, PostgreSQL (Flyway), DLQ, notifications all done. Filters and ClickHouse log lookup pending. |
+| Notification Service | ✅ ~70% complete | Kafka consumer, Slack Bot API, Block Kit alerts, DLQ done. Slack interactions, per-tenant token, WhatsApp pending. |
 | Auth Service | Planned | Not yet started |
 
 ---
@@ -415,7 +415,7 @@ classDiagram
 
 ## Incident Service
 
-**Responsibility:** Consume `IncidentEvents`, maintain the incident lifecycle in PostgreSQL, enforce valid state transitions, trigger AI summary generation, and publish `NotificationEvents`. Also exposes a REST API for the web frontend and Slack interaction handler.
+**Responsibility:** Consume `IncidentEvents`, maintain the incident lifecycle in PostgreSQL, enforce valid state transitions, trigger AI summary generation (Phase 6), and publish `NotificationEvents`. Also exposes a REST API for the web frontend and Slack interaction handler.
 
 ```mermaid
 classDiagram
@@ -432,20 +432,22 @@ classDiagram
         -IncidentRepository incidentRepository
         -AssignmentRepository assignmentRepository
         -StateHistoryRepository stateHistoryRepository
-        -AISummaryService aiSummaryService
         -NotificationEventPublisher notificationPublisher
-        +createOrUpdateIncident(event: IncidentEvent): Incident
+        -IncidentStateMachine stateMachine
+        -AISummaryService aiSummaryService
+        +createOrUpdateIncident(event: IncidentEvent): void
         +assignIncident(id: UUID, assignedTo: UUID, assignedBy: UUID, note: String): void
         +acknowledgeIncident(id: UUID, userId: UUID): void
         +resolveIncident(id: UUID, userId: UUID): void
         +getIncident(id: UUID, tenantId: UUID): Incident
         +listIncidents(tenantId: UUID, filters: IncidentFilters, pageable: Pageable): Page~Incident~
+        Note: createOrUpdateIncident finds open incident\nfor fingerprint+tenantId - updates if found\ninserts NEW if not found (resolved = closed)
     }
 
     class IncidentStateMachine {
         +transition(current: IncidentStatus, target: IncidentStatus): boolean
         +allowedTransitions(): Map~IncidentStatus, Set~IncidentStatus~~
-        Note: NEW → ASSIGNED\nASSIGNED → ACKNOWLEDGED or ASSIGNED\nACKNOWLEDGED → RESOLVED\nRESOLVED → NEW
+        Note: NEW → ASSIGNED\nASSIGNED → ACKNOWLEDGED or ASSIGNED\nACKNOWLEDGED → RESOLVED\nResolved incidents are closed - reoccurrence creates new
     }
 
     class Incident {
@@ -454,15 +456,17 @@ classDiagram
         -String fingerprint
         -String serviceName
         -String environment
-        -Severity severity
+        -String severity
         -IncidentStatus status
         -Long occurrenceCount
         -Instant firstSeenAt
         -Instant lastSeenAt
         -Instant resolvedAt
+        -List~String~ topMessages
         -String aiSummary
         -Instant createdAt
         -Instant updatedAt
+        Note: severity is String not enum\nMatches SeverityResolver output: HIGH/MEDIUM/LOW\ntopMessages stored for future AI summary prompt (Phase 6)\naiSummary is null until Phase 6
     }
 
     class IncidentAssignment {
@@ -472,6 +476,7 @@ classDiagram
         -UUID assignedByUserId
         -Instant assignedAt
         -String notes
+        Note: Append-only - each reassignment is a new row\nCurrent assignee = most recent assigned_at\nassignedByUserId accepted from request body (no auth validation until Phase 1)
     }
 
     class IncidentStateHistory {
@@ -493,15 +498,10 @@ classDiagram
 
     class Severity {
         <<enumeration>>
-        CRITICAL
         HIGH
         MEDIUM
         LOW
-    }
-
-    class IncidentConsumer {
-        -IncidentService incidentService
-        +consume(event: IncidentEvent, ack: Acknowledgment): void
+        Note: CRITICAL reserved for future use\nTODO Phase 5.x - define trigger condition\neg FATAL + occurrence rate above configurable threshold
     }
 
     class AISummaryService {
@@ -509,18 +509,38 @@ classDiagram
         -RedisCache summaryCache
         +generateSummary(incident: Incident): String
         -buildPrompt(incident: Incident, topMessages: List~String~): String
-        Note: Async - does not block notification\nCaches result in Redis TTL=1h\ntemperature=0.2, max_tokens=300
+        Note: TODO Phase 6 - not implemented in MVP\nAsync - does not block notification\nUses incident.topMessages as prompt context\nCaches result in Redis TTL=1h\ntemperature=0.2 max_tokens=300
+    }
+
+    class IncidentConsumer {
+        -IncidentService incidentService
+        -DlqProducer dlqProducer
+        +consume(record: ConsumerRecord, ack: Acknowledgment): void
+        Note: @KafkaListener topics=incident-events\ngroup=incident-service\nManual ACK mode\nAlways ACK after success or DLQ fallback
+    }
+
+    class NotificationEventPublisher {
+        -KafkaTemplate~String, NotificationEvent~ kafkaTemplate
+        +publish(event: NotificationEvent): void
+        Note: key = tenantId\nPublishes to notification-events topic
+    }
+
+    class DlqProducer {
+        -KafkaTemplate~String, DlqEvent~ kafkaTemplate
+        +publish(key: String, event: DlqEvent): void
     }
 
     IncidentController --> IncidentService
     IncidentService --> IncidentStateMachine
+    IncidentService --> NotificationEventPublisher
+    IncidentService --> AISummaryService
     IncidentService --> Incident
     IncidentService --> IncidentAssignment
     IncidentService --> IncidentStateHistory
-    IncidentService --> AISummaryService
+    IncidentConsumer --> IncidentService
+    IncidentConsumer --> DlqProducer
     Incident --> IncidentStatus
     Incident --> Severity
-    IncidentConsumer --> IncidentService
 ```
 
 ---
@@ -531,13 +551,20 @@ classDiagram
 
 The Notification Service is the only service with an inbound HTTP endpoint that is not triggered by a client. Slack calls its interaction webhook when users interact with buttons or submit modals.
 
+**Key design decisions:**
+- Uses the Slack Bot API (`chat.postMessage`) — not Incoming Webhooks. Bot API supports message updates, DMs, and interactive callbacks; Incoming Webhooks are one-way only.
+- Bot token stored in `application.yml` for MVP. Full per-tenant token stored in `SLACK_INTEGRATION` table (Phase 7.2).
+- Messages use Block Kit (structured cards with action buttons). Buttons are rendered in MVP but interaction handling is wired in Phase 7.4.
+- Same always-ACK DLQ pattern as all other services — Slack API failure never blocks the Kafka partition.
+
 ```mermaid
 classDiagram
     class NotificationConsumer {
         -SlackNotifier slackNotifier
         -WhatsAppNotifier whatsAppNotifier
+        -DlqProducer dlqProducer
         +consume(event: NotificationEvent, ack: Acknowledgment): void
-        Note: Routes by NotificationType:\nINCIDENT_CREATED → Slack channel alert\nINCIDENT_ASSIGNED → DM + channel update\nINCIDENT_RESOLVED → channel update
+        Note: @KafkaListener topics=notification-events\ngroup=notification-service\nManual ACK mode\nAlways ACK after success or DLQ fallback\nRoutes by notificationType:\nINCIDENT_CREATED → Slack channel alert\nINCIDENT_ASSIGNED → DM + channel update\nINCIDENT_RESOLVED → channel update
     }
 
     class NotificationEvent {
@@ -545,35 +572,40 @@ classDiagram
         -String incidentId
         -String fingerprint
         -String serviceName
-        -Severity severity
+        -String environment
+        -String severity
         -String aiSummary
         -Long occurrenceCount
+        -Instant firstSeenAt
+        -Instant lastSeenAt
+        -List~String~ topMessages
         -String status
         -String assignedToUserId
-        -NotificationType type
-    }
-
-    class NotificationType {
-        <<enumeration>>
-        INCIDENT_CREATED
-        INCIDENT_ASSIGNED
-        INCIDENT_RESOLVED
+        -String notificationType
+        Note: severity is String not enum\nMatches SeverityResolver output: HIGH/MEDIUM/LOW\naiSummary is null until Phase 6
     }
 
     class SlackNotifier {
-        -SlackClient slackClient
+        -String botToken
+        -String defaultChannelId
         -SlackIntegrationRepository integrationRepo
-        +sendIncidentAlert(event: NotificationEvent, tenantId: String): void
-        +sendDirectMessage(userId: String, message: String): void
+        +notify(event: NotificationEvent): void
+        +sendDirectMessage(slackUserId: String, message: String): void
         +updateMessage(channelId: String, messageTs: String, blocks: List~Block~): void
         -buildAlertBlocks(event: NotificationEvent): List~Block~
-        Note: Block Kit layout - header, fields, actions\nButtons: Assign Engineer, View Logs
+        -postMessage(channelId: String, blocks: List~Block~): void
+        Note: MVP - botToken and defaultChannelId from application.yml\nTODO Phase 7.2 - look up per-tenant token\nfrom SLACK_INTEGRATION table via integrationRepo\nBlock Kit: header, fields section, action buttons\nButtons rendered now, interactions handled in Phase 7.4
+    }
+
+    class SlackIntegrationRepository {
+        +findByTenantId(tenantId: UUID): Optional~SlackIntegration~
+        Note: TODO Phase 7.2 - not used in MVP\nMVP uses botToken from config\nFull: per-tenant bot token from SLACK_INTEGRATION table
     }
 
     class SlackInteractionController {
         -SlackInteractionHandler handler
         +handleInteraction(payload: String): ResponseEntity~Void~
-        Note: Slack calls this on button click or modal submit\nPOST /api/v1/slack/interactions
+        Note: TODO Phase 7.4 - not implemented in MVP\nSlack calls this on button click or modal submit\nPOST /api/v1/slack/interactions\nMust verify Slack request signature before processing
     }
 
     class SlackInteractionHandler {
@@ -583,21 +615,54 @@ classDiagram
         +handleViewSubmission(payload: ViewSubmissionPayload): void
         -handleAssignAction(payload): void
         -handleAcknowledgeAction(payload): void
+        Note: TODO Phase 7.4 - not implemented in MVP\nRoutes button action_id to correct handler\nCalls Incident Service REST API to update state\nThen updates original Slack message via updateMessage
+    }
+
+    class IncidentServiceClient {
+        +assignIncident(incidentId: UUID, request: AssignRequest): void
+        +acknowledgeIncident(incidentId: UUID, request: ActorRequest): void
+        +resolveIncident(incidentId: UUID, request: ActorRequest): void
+        Note: TODO Phase 7.4 - not implemented in MVP\nHTTP client for Incident Service REST API\nUse Spring WebClient or RestClient
     }
 
     class WhatsAppNotifier {
         -WhatsAppClient whatsAppClient
         +sendAlert(phoneNumber: String, message: String): void
         -buildAlertMessage(event: NotificationEvent): String
-        Note: Alert-only - no interactive callbacks
+        Note: TODO Phase 7.5 - not implemented in MVP\nAlert-only - no interactive callbacks\nProvider: Twilio or Meta Cloud API
+    }
+
+    class DlqProducer {
+        -KafkaTemplate~String, DlqEvent~ kafkaTemplate
+        +publish(key: String, event: DlqEvent): void
+    }
+
+    class KafkaConsumerConfig {
+        +consumerFactory(): ConsumerFactory~String, NotificationEvent~
+        +kafkaListenerContainerFactory(): ConcurrentKafkaListenerContainerFactory
+        Note: enable-auto-commit: false\nack-mode: MANUAL\ngroup: notification-service
+    }
+
+    class KafkaProducerConfig {
+        +dlqProducerFactory(): ProducerFactory~String, DlqEvent~
+        +dlqKafkaTemplate(): KafkaTemplate~String, DlqEvent~
+        Note: DLQ producer only - this service consumes, not produces\nacks=all, retries=3, enable.idempotence=true
+    }
+
+    class NotificationEventDeserializer {
+        -ObjectMapper objectMapper
+        +deserialize(topic: String, data: byte[]): NotificationEvent
+        Note: Uses com.fasterxml.jackson 2.x
     }
 
     NotificationConsumer --> SlackNotifier
     NotificationConsumer --> WhatsAppNotifier
-    NotificationConsumer --> NotificationEvent
+    NotificationConsumer --> DlqProducer
+    SlackNotifier --> SlackIntegrationRepository
     SlackInteractionController --> SlackInteractionHandler
     SlackInteractionHandler --> SlackNotifier
-    NotificationEvent --> NotificationType
+    SlackInteractionHandler --> IncidentServiceClient
+    KafkaConsumerConfig --> NotificationEventDeserializer
 ```
 
 ---
@@ -654,12 +719,18 @@ classDiagram
         +String tenantId
         +String incidentId
         +String fingerprint
-        +Severity severity
+        +String serviceName
+        +String environment
+        +String severity
         +String aiSummary
         +Long occurrenceCount
-        +NotificationType type
+        +Instant firstSeenAt
+        +Instant lastSeenAt
+        +List~String~ topMessages
+        +String status
         +String assignedToUserId
-        Note: Published by Incident Service\nTopic: notification-events\nKey: incidentId
+        +String notificationType
+        Note: Published by Incident Service\nTopic: notification-events\nKey: tenantId\nseverity is String not enum: HIGH/MEDIUM/LOW\nnotificationType: INCIDENT_CREATED/INCIDENT_ASSIGNED/INCIDENT_RESOLVED
     }
 
     class DlqEvent {
@@ -729,6 +800,7 @@ erDiagram
         timestamp first_seen_at
         timestamp last_seen_at
         timestamp resolved_at
+        jsonb top_messages
         text ai_summary
         timestamp created_at
         timestamp updated_at
@@ -797,9 +869,17 @@ erDiagram
 
 - **`INCIDENT.fingerprint` is not a foreign key** - it's a string hash. The fingerprint is the primary grouping mechanism in the Clustering Service, not a relational concept. Keeping it as a string makes querying flexible and avoids coupling the incident model to the normalization schema.
 
-- **`INCIDENT_ASSIGNMENT` is an append-only table** - each reassignment creates a new row. This preserves the full assignment history. The "current assignee" is the row with the most recent `assigned_at`.
+- **`INCIDENT.severity` is a `varchar` not an enum column** - matches `SeverityResolver` output: `HIGH`, `MEDIUM`, `LOW`. `CRITICAL` is not used in MVP — `SeverityResolver` has no path that produces it. If added in future, it is a non-breaking schema change.
+
+- **`INCIDENT.top_messages` is a `jsonb` array** - carries the top 10 distinct error messages collected by the Clustering Service. Stored now so the AI Summary Service (Phase 6) has prompt material without needing to re-read Kafka events.
+
+- **`INCIDENT.ai_summary` is `null` until Phase 6** - field exists in schema, no value written by MVP code. `AISummaryService` is not implemented in Phase 5.
+
+- **`INCIDENT_ASSIGNMENT` is an append-only table** - each reassignment creates a new row. This preserves the full assignment history. The "current assignee" is the row with the most recent `assigned_at`. `assigned_by_user_id` is accepted from the request body without DB validation until Phase 1 (Auth) is implemented.
 
 - **`INCIDENT_STATE_HISTORY` is an audit table** - it captures every status transition with the actor and timestamp. This supports SLA tracking, post-incident review, and compliance reporting.
+
+- **Re-open behavior** - resolved incidents are considered closed. When a fingerprint reoccurs, `createOrUpdateIncident` looks for an open incident (`status != RESOLVED`). If none exists, a new incident is created from `NEW`. Deliberate re-opening (RESOLVED → NEW transition) is a Phase 5.x feature.
 
 - **`USAGE_METRICS` is a daily rollup** - it tracks billing-relevant metrics (logs ingested, incidents created, notifications sent) aggregated per tenant per day. This is the SaaS billing foundation.
 
