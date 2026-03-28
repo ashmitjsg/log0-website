@@ -1,6 +1,7 @@
 import { FeedbackBlock } from "@/components/docs/feedback/client";
 import { onBlockFeedbackAction } from "@/lib/docs/github";
 import defaultMdxComponents from "fumadocs-ui/mdx";
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
 import { MDXComponents } from "mdx/types";
 import { Mermaid } from "@/components/mdx/mermaid";
 
@@ -13,6 +14,8 @@ export function getMDXComponents(components?: MDXComponents) {
       </FeedbackBlock>
     ),
     Mermaid,
+    Tab,
+    Tabs,
     ...components,
   } satisfies MDXComponents;
 }

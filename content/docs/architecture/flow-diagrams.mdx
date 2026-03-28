@@ -329,14 +329,14 @@ sequenceDiagram
     RC-->>CTL: RequestContext
 
     CTL->>SVC2: ingest(logRequest, context)
-    SVC2->>SVC2: Build RawLogEvent — eventId=UUID, tenantId=acme-corp, receivedAt=Instant.now()
+    SVC2->>SVC2: Build RawLogEvent - eventId=UUID, tenantId=acme-corp, receivedAt=Instant.now()
 
     SVC2->>PROD: publish(rawLogEvent)
     PROD->>K: kafkaTemplate.send(topic=raw-logs, key=acme-corp, value=rawLogEvent)
     K-->>PROD: RecordMetadata (async callback)
     PROD-->>SVC2: void
     SVC2-->>CTL: void
-    CTL-->>SVC: HTTP 202 Accepted — eventId: a1b2c3...
+    CTL-->>SVC: HTTP 202 Accepted - eventId: a1b2c3...
 ```
 
 The `RequestHeaderExtractor.requireHeader()` method throws an `IllegalArgumentException` if any required header is missing or blank. The `GlobalExceptionHandler` catches this and returns a `400 Bad Request` with a structured error body. Tenant context is never assumed - it must be explicitly supplied on every request.
@@ -398,7 +398,7 @@ sequenceDiagram
     participant LLM as Azure OpenAI (GPT-4o)
     participant PG as PostgreSQL
 
-    IS->>AIS: generateSummary(incident) — async, does not block notification
+    IS->>AIS: generateSummary(incident) - async, does not block notification
 
     AIS->>Cache: GET summary:incident:{incidentId}
     Cache-->>AIS: MISS
@@ -406,7 +406,7 @@ sequenceDiagram
     AIS->>CH: SELECT message, COUNT(*) FROM log_events WHERE fingerprint=a3f8c2 AND tenant_id=acme-corp GROUP BY message LIMIT 10
     CH-->>AIS: top 10 most frequent messages with occurrence counts
 
-    AIS->>AIS: Build prompt — service, occurrences, time range, top 10 error messages
+    AIS->>AIS: Build prompt - service, occurrences, time range, top 10 error messages
 
     AIS->>LLM: POST /chat/completions (model=gpt-4o, temperature=0.2, max_tokens=300)
     LLM-->>AIS: AI-generated summary paragraph

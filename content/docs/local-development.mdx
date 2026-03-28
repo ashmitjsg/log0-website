@@ -1,0 +1,604 @@
+---
+title: Running Locally
+description: Step-by-step guide to run the full log0 pipeline on your machine - Docker infrastructure, environment variables, all five services, health checks, log submission, and Kafka/PostgreSQL inspection.
+---
+
+## Prerequisites
+
+Make sure these are installed before you begin:
+
+| Tool | Version | Notes |
+|---|---|---|
+| **Java** | 21+ | `java -version` to verify |
+| **Maven** | 3.9+ | Included via `mvnw` wrapper - no separate install needed |
+| **Docker Desktop** | Latest | Must be running before Step 1 |
+| **Git** | Any | To clone the repo |
+| **Postman** _(optional)_ | Latest | For the Postman collection in `refs/postman/` |
+
+---
+
+## Step 1 - Start Infrastructure
+
+Start Kafka, Zookeeper, and PostgreSQL via Docker Compose. This also auto-creates all required Kafka topics.
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    cd docker\kafka
+    docker-compose up -d
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    cd docker\kafka
+    docker-compose up -d
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    cd docker/kafka
+    docker-compose up -d
+    ```
+  </Tab>
+</Tabs>
+
+Verify all three containers are running:
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    docker ps
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    docker ps
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    docker ps
+    ```
+  </Tab>
+</Tabs>
+
+You should see `log0-kafka`, `log0-zookeeper`, and `log0-postgres` in the output. The `log0-kafka-setup` container will run once to create topics and exit - that's expected.
+
+---
+
+## Step 2 - Environment Variables
+
+The **notification-service** requires Slack credentials at startup. The other four services need no additional configuration.
+
+### Getting Your Slack Credentials
+
+**Step 2a - Create a Slack App:**
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From Scratch**
+2. Name it (e.g., `log0-local`) and select your workspace → **Create App**
+
+**Step 2b - Add Bot Token Scopes:**
+1. In your app settings, go to **OAuth & Permissions** → **Bot Token Scopes**
+2. Add the scope: `chat:write`
+3. Click **Install to Workspace** → **Allow**
+4. Copy the **Bot User OAuth Token** - it starts with `xoxb-`
+
+**Step 2c - Get Your Channel ID:**
+1. In Slack, open the channel where you want notifications
+2. Click the channel name at the top → scroll down → **Copy channel ID** (looks like `C0XXXXXXXXX`)
+3. Invite the bot to the channel: `/invite @log0-local`
+
+### Creating the `.env` File
+
+Create a `.env` file inside `services/notification-service/`:
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    cd services\notification-service
+    copy .env.example .env
+    notepad .env
+    ```
+    Fill in your real values:
+    ```
+    SLACK_BOT_TOKEN=xoxb-your-actual-token
+    SLACK_CHANNEL_ID=C0XXXXXXXXX
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    cd services\notification-service
+    Copy-Item .env.example .env
+    notepad .env
+    ```
+    Fill in your real values:
+    ```
+    SLACK_BOT_TOKEN=xoxb-your-actual-token
+    SLACK_CHANNEL_ID=C0XXXXXXXXX
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    cd services/notification-service
+    cp .env.example .env
+    nano .env   # or vim, code, etc.
+    ```
+    Fill in your real values:
+    ```
+    SLACK_BOT_TOKEN=xoxb-your-actual-token
+    SLACK_CHANNEL_ID=C0XXXXXXXXX
+    ```
+  </Tab>
+</Tabs>
+
+The `.env` file is gitignored - your credentials will never be committed.
+
+**Running without Slack:** You can skip this step and run the notification-service without real credentials. It will start but log `{"ok":false,"error":"invalid_auth"}` for each Slack call. The rest of the pipeline (ingestion → normalization → clustering → incidents) works fully without Slack.
+
+---
+
+## Step 3 - Start All Services
+
+Open **5 separate terminals** - one per service. All commands run from the project root (`log0-platform/`).
+
+### Terminal 1 - Ingestion Gateway (port 8080)
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    cd services\ingestion-gateway
+    mvnw.cmd spring-boot:run
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    cd services\ingestion-gateway
+    .\mvnw.cmd spring-boot:run
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    cd services/ingestion-gateway
+    ./mvnw spring-boot:run
+    ```
+  </Tab>
+</Tabs>
+
+### Terminal 2 - Normalization Service (port 8081)
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    cd services\normalization-service
+    mvnw.cmd spring-boot:run
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    cd services\normalization-service
+    .\mvnw.cmd spring-boot:run
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    cd services/normalization-service
+    ./mvnw spring-boot:run
+    ```
+  </Tab>
+</Tabs>
+
+### Terminal 3 - Clustering Service (port 8082)
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    cd services\clustering-service
+    mvnw.cmd spring-boot:run
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    cd services\clustering-service
+    .\mvnw.cmd spring-boot:run
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    cd services/clustering-service
+    ./mvnw spring-boot:run
+    ```
+  </Tab>
+</Tabs>
+
+### Terminal 4 - Incident Service (port 8083)
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    cd services\incident-service
+    mvnw.cmd spring-boot:run
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    cd services\incident-service
+    .\mvnw.cmd spring-boot:run
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    cd services/incident-service
+    ./mvnw spring-boot:run
+    ```
+  </Tab>
+</Tabs>
+
+### Terminal 5 - Notification Service (port 8084)
+
+This service needs Slack env vars loaded before it starts.
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    cd services\notification-service
+    for /f "tokens=1,2 delims==" %i in (.env) do set %i=%j
+    mvnw.cmd spring-boot:run
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    cd services\notification-service
+    Get-Content .env | ForEach-Object { $k,$v = $_ -split '=',2; [System.Environment]::SetEnvironmentVariable($k,$v) }
+    .\mvnw.cmd spring-boot:run
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    cd services/notification-service
+    export $(cat .env | xargs)
+    ./mvnw spring-boot:run
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Step 4 - Health Checks
+
+Once all services have printed `Started ... in ... seconds`, verify they are all up:
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    curl http://localhost:8080/actuator/health
+    curl http://localhost:8081/actuator/health
+    curl http://localhost:8082/actuator/health
+    curl http://localhost:8083/actuator/health
+    curl http://localhost:8084/actuator/health
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    Invoke-RestMethod http://localhost:8080/actuator/health
+    Invoke-RestMethod http://localhost:8081/actuator/health
+    Invoke-RestMethod http://localhost:8082/actuator/health
+    Invoke-RestMethod http://localhost:8083/actuator/health
+    Invoke-RestMethod http://localhost:8084/actuator/health
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    curl http://localhost:8080/actuator/health
+    curl http://localhost:8081/actuator/health
+    curl http://localhost:8082/actuator/health
+    curl http://localhost:8083/actuator/health
+    curl http://localhost:8084/actuator/health
+    ```
+  </Tab>
+</Tabs>
+
+Every endpoint should return `{"status":"UP"}`.
+
+| Service | Port | Role |
+|---|---|---|
+| ingestion-gateway | 8080 | Receives logs from clients |
+| normalization-service | 8081 | Parses and fingerprints logs |
+| clustering-service | 8082 | Counts occurrences, triggers incidents |
+| incident-service | 8083 | Stores incidents, exposes REST API |
+| notification-service | 8084 | Sends Slack alerts |
+
+---
+
+## Step 5 - Submit a Log
+
+Send a single test log to confirm the ingestion gateway accepts it. A `202 Accepted` means the log was published to Kafka.
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    curl -X POST http://localhost:8080/api/v1/logs ^
+      -H "Content-Type: application/json" ^
+      -H "X-TENANT-ID: 550e8400-e29b-41d4-a716-446655440000" ^
+      -H "X-SERVICE-NAME: payment-service" ^
+      -H "X-ENVIRONMENT: production" ^
+      -H "X-API-KEY: test-key-123" ^
+      -d "{\"timestamp\":\"2026-03-28T10:30:00Z\",\"level\":\"ERROR\",\"message\":\"Database connection timeout after 30s\",\"trace\":\"java.sql.SQLException: Connection timeout\"}"
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    $body = @{
+        timestamp = "2026-03-28T10:30:00Z"
+        level     = "ERROR"
+        message   = "Database connection timeout after 30s"
+        trace     = "java.sql.SQLException: Connection timeout"
+    } | ConvertTo-Json
+
+    Invoke-RestMethod -Uri "http://localhost:8080/api/v1/logs" `
+      -Method POST `
+      -ContentType "application/json" `
+      -Headers @{
+          "X-TENANT-ID"    = "550e8400-e29b-41d4-a716-446655440000"
+          "X-SERVICE-NAME" = "payment-service"
+          "X-ENVIRONMENT"  = "production"
+          "X-API-KEY"      = "test-key-123"
+      } `
+      -Body $body
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    curl -X POST http://localhost:8080/api/v1/logs \
+      -H "Content-Type: application/json" \
+      -H "X-TENANT-ID: 550e8400-e29b-41d4-a716-446655440000" \
+      -H "X-SERVICE-NAME: payment-service" \
+      -H "X-ENVIRONMENT: production" \
+      -H "X-API-KEY: test-key-123" \
+      -d '{
+        "timestamp": "2026-03-28T10:30:00Z",
+        "level": "ERROR",
+        "message": "Database connection timeout after 30s",
+        "trace": "java.sql.SQLException: Connection timeout"
+      }'
+    ```
+  </Tab>
+</Tabs>
+
+**Trigger an incident:** Send the same request **10+ times**. The clustering-service counts occurrences per fingerprint and publishes to `incident-events` once the threshold is reached. Use Postman Collection Runner with Iterations = 12 for convenience.
+
+---
+
+## Step 6 - Watch Kafka Topics
+
+Open additional terminals to watch messages flowing through the pipeline in real time.
+
+### raw-logs (ingestion output)
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic raw-logs --from-beginning --property print.key=true
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic raw-logs --from-beginning --property print.key=true
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    docker exec -it log0-kafka kafka-console-consumer \
+      --bootstrap-server localhost:9092 \
+      --topic raw-logs \
+      --from-beginning \
+      --property print.key=true
+    ```
+  </Tab>
+</Tabs>
+
+### normalized-logs (after normalization + fingerprinting)
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic normalized-logs --from-beginning --property print.key=true
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic normalized-logs --from-beginning --property print.key=true
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    docker exec -it log0-kafka kafka-console-consumer \
+      --bootstrap-server localhost:9092 \
+      --topic normalized-logs \
+      --from-beginning \
+      --property print.key=true
+    ```
+  </Tab>
+</Tabs>
+
+### incident-events (fires after 10 occurrences of the same fingerprint)
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic incident-events --from-beginning --property print.key=true
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic incident-events --from-beginning --property print.key=true
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    docker exec -it log0-kafka kafka-console-consumer \
+      --bootstrap-server localhost:9092 \
+      --topic incident-events \
+      --from-beginning \
+      --property print.key=true
+    ```
+  </Tab>
+</Tabs>
+
+### notification-events (triggers Slack messages)
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic notification-events --from-beginning --property print.key=true
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic notification-events --from-beginning --property print.key=true
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    docker exec -it log0-kafka kafka-console-consumer \
+      --bootstrap-server localhost:9092 \
+      --topic notification-events \
+      --from-beginning \
+      --property print.key=true
+    ```
+  </Tab>
+</Tabs>
+
+### raw-logs-dlq (dead letter queue - should stay empty)
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic raw-logs-dlq --from-beginning
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic raw-logs-dlq --from-beginning
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    docker exec -it log0-kafka kafka-console-consumer \
+      --bootstrap-server localhost:9092 \
+      --topic raw-logs-dlq \
+      --from-beginning
+    ```
+  </Tab>
+</Tabs>
+
+### Check consumer group lag
+
+Zero lag means all services are caught up. Lag > 0 means a service is behind or crashed.
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group normalization-service
+    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group clustering-service
+    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group incident-service
+    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group notification-service
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group normalization-service
+    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group clustering-service
+    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group incident-service
+    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group notification-service
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    for group in normalization-service clustering-service incident-service notification-service; do
+      echo "--- $group ---"
+      docker exec -it log0-kafka kafka-consumer-groups \
+        --bootstrap-server localhost:9092 \
+        --describe --group $group
+    done
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Step 7 - Inspect PostgreSQL
+
+PostgreSQL is exposed on port **5433** (the container runs on 5432 internally; Docker maps it to 5433 on your host).
+
+### Connect to the database
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    docker exec -it log0-postgres psql -U log0 -d log0
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    docker exec -it log0-postgres psql -U log0 -d log0
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    docker exec -it log0-postgres psql -U log0 -d log0
+    ```
+  </Tab>
+</Tabs>
+
+### Useful queries
+
+Once inside `psql`, run these:
+
+```sql
+-- List all incidents (newest first)
+SELECT incident_id, service_name, severity, status, occurrence_count, created_at
+FROM incident
+ORDER BY created_at DESC
+LIMIT 10;
+
+-- Check state transitions for a specific incident
+SELECT from_status, to_status, changed_at
+FROM incident_state_history
+WHERE incident_id = '<your-incident-id>'
+ORDER BY changed_at;
+
+-- Count incidents per tenant
+SELECT tenant_id, COUNT(*) AS total
+FROM incident
+GROUP BY tenant_id;
+
+-- Exit psql
+\q
+```
+
+### Connect with an external client (pgAdmin, DBeaver, TablePlus)
+
+| Setting | Value |
+|---|---|
+| Host | `localhost` |
+| Port | `5433` |
+| Database | `log0` |
+| Username | `log0` |
+| Password | `log0` |
+
+---
+
+## Pipeline at a Glance
+
+```
+POST /api/v1/logs (8080)
+  → raw-logs (Kafka)
+    → normalization-service (8081)
+      → normalized-logs (Kafka)
+        → clustering-service (8082)
+          → incident-events (Kafka)  ← fires at 10 occurrences
+            → incident-service (8083) → PostgreSQL
+              → notification-events (Kafka)
+                → notification-service (8084) → Slack
+```
+
+A full end-to-end test (10 logs → Slack message) takes about 2–3 seconds under normal load.

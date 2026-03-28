@@ -277,10 +277,10 @@ classDiagram
 **Responsibility:** Consume `NormalizedLogEvents` from Kafka, group them by fingerprint within a time window, and publish an `IncidentEvent` to `incident-events` when the occurrence threshold is crossed. Continues publishing updates on every subsequent match so the Incident Service can track `occurrenceCount` and `lastSeenAt` in real time.
 
 **Key design decisions:**
-- `OccurrenceStore` is an interface — `FingerprintClusterer` never touches storage directly. Swapping in-memory for Redis later requires changing one class, not the clusterer.
-- Tumbling window (fixed 5-min buckets) chosen over sliding window for MVP simplicity — a burst of errors will cross the threshold regardless of window style.
+- `OccurrenceStore` is an interface - `FingerprintClusterer` never touches storage directly. Swapping in-memory for Redis later requires changing one class, not the clusterer.
+- Tumbling window (fixed 5-min buckets) chosen over sliding window for MVP simplicity - a burst of errors will cross the threshold regardless of window style.
 - Threshold and window duration are externalised into `ClusteringConfig` so they can be tuned without a code change.
-- `topMessages` collected per window — capped at 10 distinct values. Used later by the AI Summary Service to build its prompt.
+- `topMessages` collected per window - capped at 10 distinct values. Used later by the AI Summary Service to build its prompt.
 
 ```mermaid
 classDiagram
@@ -304,7 +304,7 @@ classDiagram
     class OccurrenceStore {
         <<interface>>
         +increment(key: ClusterKey, message: String): OccurrenceWindow
-        Note: Interface — swap InMemoryOccurrenceStore for\nRedisOccurrenceStore without changing FingerprintClusterer
+        Note: Interface - swap InMemoryOccurrenceStore for\nRedisOccurrenceStore without changing FingerprintClusterer
     }
 
     class InMemoryOccurrenceStore {
@@ -407,7 +407,7 @@ classDiagram
 
 **The `OccurrenceStore` interface is the upgrade seam.** When you need persistence or horizontal scaling, implement `RedisOccurrenceStore` and swap it in via Spring `@Primary`. `FingerprintClusterer` never changes.
 
-**The `ClusterKey` is what makes the tumbling window work.** Two events in the same 5-minute bucket produce the same key → same counter. An event in the next bucket gets a fresh counter. The bucket is computed as `timestamp.truncatedTo(ChronoUnit.MINUTES)` rounded down to the nearest 5 — e.g. 10:03 → `10:00`, 10:07 → `10:05`.
+**The `ClusterKey` is what makes the tumbling window work.** Two events in the same 5-minute bucket produce the same key → same counter. An event in the next bucket gets a fresh counter. The bucket is computed as `timestamp.truncatedTo(ChronoUnit.MINUTES)` rounded down to the nearest 5 - e.g. 10:03 → `10:00`, 10:07 → `10:05`.
 
 **Sliding window upgrade path (future):** When accuracy across bucket boundaries matters, the upgrade involves four steps: (1) extract a `WindowStrategy` interface with `computeKey()` and `isExpired()` methods; (2) move the current bucket truncation logic into `TumblingWindowStrategy`; (3) implement `SlidingWindowStrategy` which stores a `List<Instant>` of per-event timestamps in `OccurrenceWindow` and evicts expired entries on each `increment()` call; (4) inject `WindowStrategy` into `OccurrenceStore` implementations. `FingerprintClusterer` requires no changes because it only talks to `OccurrenceStore`.
 
@@ -552,10 +552,10 @@ classDiagram
 The Notification Service is the only service with an inbound HTTP endpoint that is not triggered by a client. Slack calls its interaction webhook when users interact with buttons or submit modals.
 
 **Key design decisions:**
-- Uses the Slack Bot API (`chat.postMessage`) — not Incoming Webhooks. Bot API supports message updates, DMs, and interactive callbacks; Incoming Webhooks are one-way only.
+- Uses the Slack Bot API (`chat.postMessage`) - not Incoming Webhooks. Bot API supports message updates, DMs, and interactive callbacks; Incoming Webhooks are one-way only.
 - Bot token stored in `application.yml` for MVP. Full per-tenant token stored in `SLACK_INTEGRATION` table (Phase 7.2).
 - Messages use Block Kit (structured cards with action buttons). Buttons are rendered in MVP but interaction handling is wired in Phase 7.4.
-- Same always-ACK DLQ pattern as all other services — Slack API failure never blocks the Kafka partition.
+- Same always-ACK DLQ pattern as all other services - Slack API failure never blocks the Kafka partition.
 
 ```mermaid
 classDiagram
@@ -869,7 +869,7 @@ erDiagram
 
 - **`INCIDENT.fingerprint` is not a foreign key** - it's a string hash. The fingerprint is the primary grouping mechanism in the Clustering Service, not a relational concept. Keeping it as a string makes querying flexible and avoids coupling the incident model to the normalization schema.
 
-- **`INCIDENT.severity` is a `varchar` not an enum column** - matches `SeverityResolver` output: `HIGH`, `MEDIUM`, `LOW`. `CRITICAL` is not used in MVP — `SeverityResolver` has no path that produces it. If added in future, it is a non-breaking schema change.
+- **`INCIDENT.severity` is a `varchar` not an enum column** - matches `SeverityResolver` output: `HIGH`, `MEDIUM`, `LOW`. `CRITICAL` is not used in MVP - `SeverityResolver` has no path that produces it. If added in future, it is a non-breaking schema change.
 
 - **`INCIDENT.top_messages` is a `jsonb` array** - carries the top 10 distinct error messages collected by the Clustering Service. Stored now so the AI Summary Service (Phase 6) has prompt material without needing to re-read Kafka events.
 

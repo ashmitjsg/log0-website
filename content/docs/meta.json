@@ -1,0 +1,8 @@
+{
+  "title": "Docs",
+  "pages": [
+    "index",
+    "local-development",
+    "architecture"
+  ]
+}
