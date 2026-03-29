@@ -669,7 +669,7 @@ classDiagram
 
 ## AI Summary Service
 
-**Responsibility:** Receive a summary request from the Incident Service, build a structured LLM prompt from the incident context, call the configured LLM provider, and write the result back to the Incident Service via REST. Runs as a standalone service on port 8086 so it can fail, retry, and scale independently of the incident pipeline.
+**Responsibility:** Receive a summary request from the Incident Service, build a structured LLM prompt from the incident context, call the configured LLM provider, and write the result back to the Incident Service via REST. Runs as a standalone service on port 8085 so it can fail, retry, and scale independently of the incident pipeline.
 
 **Key design decisions:**
 - **Strategy Pattern** for LLM providers - `LlmProvider` interface with interchangeable implementations (Groq, OpenAI, Gemini, Anthropic). Active provider selected by `ai.provider` in `application.yml`. See ADR-008.

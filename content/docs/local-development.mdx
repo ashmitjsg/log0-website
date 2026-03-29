@@ -1,6 +1,6 @@
 ---
 title: Running Locally
-description: Step-by-step guide to run the full log0 pipeline on your machine - Docker infrastructure, environment variables, all five services, health checks, log submission, and Kafka/PostgreSQL inspection.
+description: Step-by-step guide to run the full log0 pipeline on your machine - Docker infrastructure, environment variables, all six services, health checks, log submission, and Kafka/PostgreSQL inspection.
 ---
 
 ## Prerequisites
@@ -68,7 +68,7 @@ You should see `log0-kafka`, `log0-zookeeper`, and `log0-postgres` in the output
 
 ## Step 2 - Environment Variables
 
-The **notification-service** requires Slack credentials at startup. The other four services need no additional configuration.
+The **notification-service** requires Slack credentials and the **ai-service** requires an LLM provider API key at startup. The other four services need no additional configuration.
 
 ### Getting Your Slack Credentials
 
@@ -133,6 +133,48 @@ Create a `.env` file inside `services/notification-service/`:
 The `.env` file is gitignored - your credentials will never be committed.
 
 **Running without Slack:** You can skip this step and run the notification-service without real credentials. It will start but log `{"ok":false,"error":"invalid_auth"}` for each Slack call. The rest of the pipeline (ingestion → normalization → clustering → incidents) works fully without Slack.
+
+### AI Service credentials
+
+The **ai-service** uses [Groq](https://console.groq.com) by default — free tier, no credit card required. Get a key at [console.groq.com](https://console.groq.com), then:
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    cd services\ai-service
+    copy .env.example .env
+    notepad .env
+    ```
+    Fill in your Groq key:
+    ```
+    GROQ_API_KEY=gsk_your-actual-key-here
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    cd services\ai-service
+    Copy-Item .env.example .env
+    notepad .env
+    ```
+    Fill in your Groq key:
+    ```
+    GROQ_API_KEY=gsk_your-actual-key-here
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    cd services/ai-service
+    cp .env.example .env
+    nano .env   # or vim, code, etc.
+    ```
+    Fill in your Groq key:
+    ```
+    GROQ_API_KEY=gsk_your-actual-key-here
+    ```
+  </Tab>
+</Tabs>
+
+The other three keys (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`) are optional — only needed if you switch `ai.provider` in `services/ai-service/src/main/resources/application.yml`.
 
 ---
 
@@ -260,6 +302,34 @@ This service needs Slack env vars loaded before it starts.
   </Tab>
 </Tabs>
 
+### Terminal 6 - AI Service (port 8085)
+
+This service needs the Groq API key loaded before it starts.
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    cd services\ai-service
+    for /f "tokens=1,2 delims==" %i in (.env) do @if not "%i:~0,1%"=="#" set "%i=%j"
+    mvnw.cmd spring-boot:run
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    cd services\ai-service
+    Get-Content .env | Where-Object { $_ -notmatch '^#' -and $_ -match '=' } | ForEach-Object { $k,$v = $_ -split '=',2; Set-Item "env:$k" $v }
+    .\mvnw.cmd spring-boot:run
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    cd services/ai-service
+    export $(cat .env | grep -v '^#' | xargs)
+    ./mvnw spring-boot:run
+    ```
+  </Tab>
+</Tabs>
+
 ---
 
 ## Step 4 - Health Checks
@@ -270,41 +340,44 @@ Once all services have printed `Started ... in ... seconds`, verify they are all
   <Tab value="Windows CMD">
     ```cmd
     curl http://localhost:8080/actuator/health
-    curl http://localhost:8081/actuator/health
     curl http://localhost:8082/actuator/health
     curl http://localhost:8083/actuator/health
     curl http://localhost:8084/actuator/health
+    curl http://localhost:8085/actuator/health
     ```
   </Tab>
   <Tab value="Windows PowerShell">
     ```powershell
     Invoke-RestMethod http://localhost:8080/actuator/health
-    Invoke-RestMethod http://localhost:8081/actuator/health
     Invoke-RestMethod http://localhost:8082/actuator/health
     Invoke-RestMethod http://localhost:8083/actuator/health
     Invoke-RestMethod http://localhost:8084/actuator/health
+    Invoke-RestMethod http://localhost:8085/actuator/health
     ```
   </Tab>
   <Tab value="Linux/macOS">
     ```bash
     curl http://localhost:8080/actuator/health
-    curl http://localhost:8081/actuator/health
     curl http://localhost:8082/actuator/health
     curl http://localhost:8083/actuator/health
     curl http://localhost:8084/actuator/health
+    curl http://localhost:8085/actuator/health
     ```
   </Tab>
 </Tabs>
 
 Every endpoint should return `{"status":"UP"}`.
 
+> **Note:** normalization-service is Kafka-only and does not expose an HTTP port — it has no actuator endpoint to check.
+
 | Service | Port | Role |
 |---|---|---|
 | ingestion-gateway | 8080 | Receives logs from clients |
-| normalization-service | 8081 | Parses and fingerprints logs |
+| normalization-service | — (Kafka only) | Parses and fingerprints logs |
 | clustering-service | 8082 | Counts occurrences, triggers incidents |
 | incident-service | 8083 | Stores incidents, exposes REST API |
 | notification-service | 8084 | Sends Slack alerts |
+| ai-service | 8085 | Generates AI summaries via LLM |
 
 ---
 
@@ -364,6 +437,56 @@ Send a single test log to confirm the ingestion gateway accepts it. A `202 Accep
 </Tabs>
 
 **Trigger an incident:** Send the same request **10+ times**. The clustering-service counts occurrences per fingerprint and publishes to `incident-events` once the threshold is reached. Use Postman Collection Runner with Iterations = 12 for convenience.
+
+**Verify AI summary:** After triggering an incident, connect to PostgreSQL and check that `ai_summary` was populated:
+
+```sql
+SELECT incident_id, service_name, status, ai_summary
+FROM incident
+ORDER BY created_at DESC
+LIMIT 5;
+```
+
+The first incident row should contain a structured summary from the LLM within a few seconds of creation.
+
+### Manual AI service test (isolated)
+
+You can also test ai-service independently without going through the full pipeline. With ai-service running, send a direct POST:
+
+<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
+  <Tab value="Windows CMD">
+    ```cmd
+    curl -X POST http://localhost:8085/api/v1/summaries -H "Content-Type: application/json" -d "{\"incidentId\":\"00000000-0000-0000-0000-000000000001\",\"tenantId\":\"test-tenant\",\"serviceName\":\"payment-service\",\"environment\":\"production\",\"severity\":\"HIGH\",\"occurrenceCount\":42,\"firstSeenAt\":\"2024-01-01T10:00:00Z\",\"lastSeenAt\":\"2024-01-01T11:00:00Z\",\"topMessages\":[\"Connection refused: db-host:5432\",\"Timeout waiting for connection from pool\"]}"
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    Invoke-RestMethod -Uri "http://localhost:8085/api/v1/summaries" -Method POST -ContentType "application/json" -Body '{"incidentId":"00000000-0000-0000-0000-000000000001","tenantId":"test-tenant","serviceName":"payment-service","environment":"production","severity":"HIGH","occurrenceCount":42,"firstSeenAt":"2024-01-01T10:00:00Z","lastSeenAt":"2024-01-01T11:00:00Z","topMessages":["Connection refused: db-host:5432","Timeout waiting for connection from pool"]}'
+    ```
+  </Tab>
+  <Tab value="Linux/macOS">
+    ```bash
+    curl -X POST http://localhost:8085/api/v1/summaries \
+      -H "Content-Type: application/json" \
+      -d '{
+        "incidentId": "00000000-0000-0000-0000-000000000001",
+        "tenantId": "test-tenant",
+        "serviceName": "payment-service",
+        "environment": "production",
+        "severity": "HIGH",
+        "occurrenceCount": 42,
+        "firstSeenAt": "2024-01-01T10:00:00Z",
+        "lastSeenAt": "2024-01-01T11:00:00Z",
+        "topMessages": [
+          "Connection refused: db-host:5432",
+          "Timeout waiting for connection from pool"
+        ]
+      }'
+    ```
+  </Tab>
+</Tabs>
+
+Expected response: `202 Accepted`. Check the ai-service logs — you should see the Groq API call succeed, then a callback attempt to incident-service (which will fail with a connection error if incident-service is not running — that's expected and handled gracefully).
 
 ---
 
@@ -597,8 +720,12 @@ POST /api/v1/logs (8080)
         → clustering-service (8082)
           → incident-events (Kafka)  ← fires at 10 occurrences
             → incident-service (8083) → PostgreSQL
+                → POST /api/v1/summaries (8085, async)
+                    → ai-service → Groq LLM
+                        → PATCH /api/v1/incidents/{id}/ai-summary (8083)
+                            → incident.ai_summary saved to PostgreSQL
               → notification-events (Kafka)
                 → notification-service (8084) → Slack
 ```
 
-A full end-to-end test (10 logs → Slack message) takes about 2–3 seconds under normal load.
+A full end-to-end test (10 logs → Slack message + AI summary) takes about 3–5 seconds under normal load.

@@ -42,7 +42,7 @@ graph TD
         end
 
         subgraph AI["AI Layer"]
-            AIS[AI Summary Service\nPort 8086\nGroq · OpenAI · Gemini · Anthropic]
+            AIS[AI Summary Service\nPort 8085\nGroq · OpenAI · Gemini · Anthropic]
         end
 
         subgraph Storage["Storage Layer"]
@@ -52,7 +52,7 @@ graph TD
         end
 
         subgraph Auth["Auth Layer"]
-            AS[Auth Service :8085\nJWT · Tenant Context · API Keys]
+            AS[Auth Service :8086\nJWT · Tenant Context · API Keys]
         end
     end
 
@@ -286,15 +286,15 @@ The two highest-latency operations are:
 | Ingestion Gateway | 8080 | HTTP | ✅ Implemented |
 | Normalization Service | 8081 | - (Kafka only) | ✅ Implemented |
 | Clustering Service | 8082 | - (Kafka only) | ✅ Implemented |
-| Incident Service | 8083 | HTTP + Kafka | Planned |
-| Notification Service | 8084 | HTTP + Kafka | Planned |
-| Auth Service | 8085 | HTTP | Planned |
-| AI Summary Service | 8086 | HTTP | Planned |
+| Incident Service | 8083 | HTTP + Kafka | ✅ Implemented |
+| Notification Service | 8084 | HTTP + Kafka | ✅ Implemented |
+| AI Summary Service | 8085 | HTTP | ✅ Implemented |
+| Auth Service | 8086 | HTTP | Planned |
 | Frontend (Vite) | 3000 | HTTP | Planned |
 | Kafka (external) | 9092 | TCP | ✅ Running |
 | Kafka (internal/Docker) | 29092 | TCP | ✅ Running |
 | Zookeeper | 2181 | TCP | ✅ Running |
-| PostgreSQL | 5432 | TCP | Planned |
+| PostgreSQL | 5433 | TCP | ✅ Running |
 | ClickHouse (HTTP) | 8123 | HTTP | Planned |
 | ClickHouse (native) | 9000 | TCP | Planned |
 | Redis | 6379 | TCP | Planned |
