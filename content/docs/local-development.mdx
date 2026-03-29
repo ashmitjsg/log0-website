@@ -1,6 +1,6 @@
 ---
 title: Running Locally
-description: Step-by-step guide to run the full log0 pipeline on your machine - Docker infrastructure, environment variables, all six services, health checks, log submission, and Kafka/PostgreSQL inspection.
+description: Step-by-step guide to run the full log0 pipeline on your machine - Docker infrastructure, environment variables, all seven services, health checks, log submission, and Kafka/PostgreSQL inspection.
 ---
 
 ## Prerequisites
@@ -399,6 +399,34 @@ This service needs the Groq API key loaded before it starts.
   </Tab>
 </Tabs>
 
+### Terminal 7 - Auth Service (port 8086)
+
+This service needs the `JWT_SECRET` loaded before it starts.
+
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
+  <Tab value="Linux/macOS">
+    ```bash
+    cd services/auth-service
+    export $(cat .env | grep -v '^#' | xargs)
+    ./mvnw spring-boot:run
+    ```
+  </Tab>
+<Tab value="Windows PowerShell">
+    ```powershell
+    cd services\auth-service
+    Get-Content .env | Where-Object { $_ -notmatch '^#' -and $_ -match '=' } | ForEach-Object { $k,$v = $_ -split '=',2; Set-Item "env:$k" $v }
+    .\mvnw.cmd spring-boot:run
+    ```
+  </Tab>
+<Tab value="Windows CMD">
+    ```cmd
+    cd services\auth-service
+    for /f "tokens=1,2 delims==" %i in (.env) do @if not "%i:~0,1%"=="#" set "%i=%j"
+    mvnw.cmd spring-boot:run
+    ```
+  </Tab>
+</Tabs>
+
 ---
 
 ## Step 4 - Health Checks
@@ -413,6 +441,7 @@ Once all services have printed `Started ... in ... seconds`, verify they are all
     curl http://localhost:8083/actuator/health
     curl http://localhost:8084/actuator/health
     curl http://localhost:8085/actuator/health
+    curl http://localhost:8086/actuator/health
     ```
   </Tab>
 <Tab value="Windows PowerShell">
@@ -422,6 +451,7 @@ Once all services have printed `Started ... in ... seconds`, verify they are all
     Invoke-RestMethod http://localhost:8083/actuator/health
     Invoke-RestMethod http://localhost:8084/actuator/health
     Invoke-RestMethod http://localhost:8085/actuator/health
+    Invoke-RestMethod http://localhost:8086/actuator/health
     ```
   </Tab>
 <Tab value="Windows CMD">
@@ -431,6 +461,7 @@ Once all services have printed `Started ... in ... seconds`, verify they are all
     curl http://localhost:8083/actuator/health
     curl http://localhost:8084/actuator/health
     curl http://localhost:8085/actuator/health
+    curl http://localhost:8086/actuator/health
     ```
   </Tab>
 </Tabs>
@@ -442,11 +473,12 @@ Every endpoint should return `{"status":"UP"}`.
 | Service | Port | Role |
 |---|---|---|
 | ingestion-gateway | 8080 | Receives logs from clients |
-| normalization-service | - (Kafka only) | Parses and fingerprints logs |
+| normalization-service | — (Kafka only) | Parses and fingerprints logs |
 | clustering-service | 8082 | Counts occurrences, triggers incidents |
 | incident-service | 8083 | Stores incidents, exposes REST API |
 | notification-service | 8084 | Sends Slack alerts |
 | ai-service | 8085 | Generates AI summaries via LLM |
+| auth-service | 8086 | Tenant registration, JWT auth, API key management |
 
 ---
 

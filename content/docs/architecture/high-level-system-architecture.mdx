@@ -1,6 +1,6 @@
 ---
 title: System Design
-description: The full platform architecture - all six services, five Kafka topics, three storage layers, and how they connect. Includes the multi-tenant model and service dependency map.
+description: The full platform architecture - all seven services, five Kafka topics, three storage layers, and how they connect. Includes the multi-tenant model and service dependency map.
 ---
 
 ## What You're Looking At
@@ -289,7 +289,7 @@ The two highest-latency operations are:
 | Incident Service | 8083 | HTTP + Kafka | ✅ Implemented |
 | Notification Service | 8084 | HTTP + Kafka | ✅ Implemented |
 | AI Summary Service | 8085 | HTTP | ✅ Implemented |
-| Auth Service | 8086 | HTTP | Planned |
+| Auth Service | 8086 | HTTP | ✅ Implemented |
 | Frontend (Vite) | 3000 | HTTP | Planned |
 | Kafka (external) | 9092 | TCP | ✅ Running |
 | Kafka (internal/Docker) | 29092 | TCP | ✅ Running |

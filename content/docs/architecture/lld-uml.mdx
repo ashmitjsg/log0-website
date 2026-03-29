@@ -16,7 +16,7 @@ This section documents the internal structure of each service - the classes, the
 | Clustering Service | ✅ ~95% complete | Core pipeline implemented; Redis persistence and sliding window upgrade planned |
 | Incident Service | ✅ ~80% complete | Kafka consumer, state machine, REST API, PostgreSQL (Flyway), DLQ, notifications all done. Filters and ClickHouse log lookup pending. |
 | Notification Service | ✅ ~70% complete | Kafka consumer, Slack Bot API, Block Kit alerts, DLQ done. Slack interactions, per-tenant token, WhatsApp pending. |
-| Auth Service | ⬜ Planned | Class diagram and flows documented; implementation is Phase 1 |
+| Auth Service | ✅ ~90% complete | Tenant, User, ApiKey, RefreshToken entities; JwtUtil, AuthService, TenantService, UserService, ApiKeyService; JwtAuthFilter, SecurityConfig; all controllers. Frontend integration pending. |
 | AI Summary Service | ✅ ~80% complete | Strategy pattern (Groq/OpenAI/Gemini/Anthropic), PromptBuilder, async callback. Redis cache and fallback template pending. |
 
 ---

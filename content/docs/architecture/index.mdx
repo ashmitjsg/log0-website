@@ -37,7 +37,7 @@ graph TD
     subgraph External["External Dependencies"]
         SLACK[Slack Workspace]
         WA[WhatsApp]
-        LLM[Azure OpenAI\nGPT-4o]
+        LLM[LLM Provider\nGroq · OpenAI · Gemini · Anthropic]
     end
 
     SVC1 -->|POST /api/v1/logs| log0
@@ -128,6 +128,6 @@ These are the design-time targets for a single-instance deployment.
 | Log storage | ClickHouse | High-volume analytical queries |
 | Incident storage | PostgreSQL | ACID transactions, relational state |
 | Cache / state | Redis | Rate limiting, clustering windows, LLM cache |
-| AI summaries | Azure OpenAI (GPT-4o) | Incident summarization |
+| AI summaries | Groq (default) · OpenAI · Gemini · Anthropic | Incident summarization via Strategy Pattern |
 | Notifications | Slack Block Kit + WhatsApp | Engineer alerts and actions |
 | Build | Maven + Docker | Service builds and local infra |
