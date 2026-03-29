@@ -42,7 +42,7 @@ graph TD
         end
 
         subgraph AI["AI Layer"]
-            AIS[AI Summary Service\nAzure OpenAI GPT-4o]
+            AIS[AI Summary Service\nPort 8086\nGroq · OpenAI · Gemini · Anthropic]
         end
 
         subgraph Storage["Storage Layer"]
@@ -241,7 +241,7 @@ graph TD
     PG[PostgreSQL]
     CH[ClickHouse]
     RD[Redis]
-    LLM["Azure OpenAI\n(GPT-4o)"]
+    LLM["LLM Provider\n(Strategy Pattern)\nGroq · OpenAI · Gemini · Anthropic"]
     SLACK[Slack API]
     WA[WhatsApp API]
 
@@ -275,7 +275,7 @@ The end-to-end critical path - from log ingestion to Slack notification - touche
 
 The two highest-latency operations are:
 1. **Clustering window** - the Clustering Service accumulates events over a configurable time window before emitting an `IncidentEvent`. This window is tunable but introduces intentional lag.
-2. **AI summary** - GPT-4o is called asynchronously after the incident is created. It does not block the notification; engineers see the incident in Slack before the summary arrives.
+2. **AI summary** - The LLM provider is called asynchronously after the incident is created via a REST call to the AI Summary Service. It does not block the notification; engineers see the incident in Slack before the summary arrives.
 
 ---
 
@@ -289,6 +289,7 @@ The two highest-latency operations are:
 | Incident Service | 8083 | HTTP + Kafka | Planned |
 | Notification Service | 8084 | HTTP + Kafka | Planned |
 | Auth Service | 8085 | HTTP | Planned |
+| AI Summary Service | 8086 | HTTP | Planned |
 | Frontend (Vite) | 3000 | HTTP | Planned |
 | Kafka (external) | 9092 | TCP | ✅ Running |
 | Kafka (internal/Docker) | 29092 | TCP | ✅ Running |

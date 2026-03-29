@@ -207,19 +207,19 @@ Every incident moves through exactly four states. Transitions are enforced by `I
 
 ```mermaid
 stateDiagram-v2
-    [*] --> NEW : Clustering threshold exceeded\nIncidentService.createOrUpdateIncident
+    [*] --> NEW : Clustering threshold exceeded
 
-    NEW --> ASSIGNED : Admin assigns engineer\nvia Slack modal or web UI
+    NEW --> ASSIGNED : Admin assigns engineer
 
-    ASSIGNED --> ACKNOWLEDGED : Engineer acknowledges\nvia Slack button or web UI
+    ASSIGNED --> ACKNOWLEDGED : Engineer acknowledges
 
-    ACKNOWLEDGED --> RESOLVED : Engineer resolves\nvia web UI
+    ACKNOWLEDGED --> RESOLVED : Engineer resolves
 
-    RESOLVED --> NEW : Same fingerprint reoccurs\nMVP: creates new incident\nFuture: configurable reopen
+    RESOLVED --> NEW : Same fingerprint reoccurs
 
     ASSIGNED --> ASSIGNED : Reassigned to different engineer
 
-    NEW --> RESOLVED : Auto-resolve if no new logs\nin configured window (optional)
+    NEW --> RESOLVED : Auto-resolve if no new logs (optional)
 
     note right of NEW
         On entry:
@@ -392,34 +392,39 @@ AI summarization is asynchronous and non-blocking. The incident is created and t
 ```mermaid
 sequenceDiagram
     participant IS as Incident Service
-    participant AIS as AISummaryService
-    participant Cache as Redis
-    participant CH as ClickHouse
-    participant LLM as Azure OpenAI (GPT-4o)
+    participant AIS as AI Summary Service (8086)
+    participant Cache as Redis (future)
+    participant CH as ClickHouse (future)
+    participant LLM as LLM Provider (Strategy)
     participant PG as PostgreSQL
 
-    IS->>AIS: generateSummary(incident) - async, does not block notification
+    IS->>AIS: POST /api/v1/summaries (async - does not block notification)
+    Note over AIS: Request body: incidentId · tenantId · serviceName · environment<br/>severity · occurrenceCount · firstSeenAt · lastSeenAt · topMessages
 
-    AIS->>Cache: GET summary:incident:{incidentId}
+    AIS->>Cache: GET summary:incident:incidentId [future - Phase 9]
     Cache-->>AIS: MISS
 
-    AIS->>CH: SELECT message, COUNT(*) FROM log_events WHERE fingerprint=a3f8c2 AND tenant_id=acme-corp GROUP BY message LIMIT 10
+    AIS->>AIS: PromptBuilder.build(request) - structured prompt
+    Note over AIS: MVP uses topMessages from request<br/>Future (Phase 4.5): enrich with ClickHouse query below
+
+    AIS->>CH: Query top 10 messages by fingerprint and tenant [future - Phase 4.5]
     CH-->>AIS: top 10 most frequent messages with occurrence counts
 
-    AIS->>AIS: Build prompt - service, occurrences, time range, top 10 error messages
+    AIS->>LLM: provider.generateSummary(prompt) temperature=0.2 maxTokens=300
+    Note over LLM: Active provider selected by ai.provider config<br/>Groq (default) · OpenAI · Gemini · Anthropic<br/>All implement LlmProvider interface (Strategy Pattern)
+    LLM-->>AIS: AI-generated summary text
 
-    AIS->>LLM: POST /chat/completions (model=gpt-4o, temperature=0.2, max_tokens=300)
-    LLM-->>AIS: AI-generated summary paragraph
+    AIS->>Cache: SET summary:incident:incidentId TTL=1h [future - Phase 9]
+    AIS->>IS: PATCH /api/v1/incidents/incidentId/ai-summary
+    IS->>PG: UPDATE incidents SET ai_summary=...
 
-    AIS->>Cache: SET summary:incident:{incidentId} TTL=1h
-    AIS->>PG: UPDATE incidents SET ai_summary=... WHERE incident_id=inc_xxx
-    AIS-->>IS: summary stored
-
-    Note over IS: Notification Service edits the Slack message once summary is ready
+    Note over IS: ai_summary stored - next notification will include it
 ```
 
 **Why `temperature: 0.2`?** Low temperature produces deterministic, factual summaries. High temperature produces creative writing. An SRE reading a Slack alert at 2 AM needs the former.
 
-**Why cache the summary in Redis?** The summary is expensive to generate (LLM API call + ClickHouse query). If the same incident is re-opened or if the API is called multiple times, the cached result is returned instantly. The 1-hour TTL is a balance between freshness (the incident may accumulate new messages) and cost.
+**MVP vs full prompt enrichment:** In MVP, `topMessages` from the `SummaryRequest` (stored on the incident row since creation) is sufficient for a useful summary. Once ClickHouse is implemented (Phase 4.5), the prompt will be enriched with a live query for the top 10 most frequent distinct messages across all occurrences - giving the LLM richer, more representative input.
 
-**What the query does:** The ClickHouse query fetches the ten most common distinct messages for this fingerprint. These are the raw log messages, not templated - they give the LLM specific text to work with, including the actual timeout durations, which may hint at the cause.
+**Redis cache (Phase 9):** The AI Summary Service will cache `summary:incident:{incidentId}` with a 1-hour TTL to avoid redundant LLM calls if the same incident triggers multiple summary requests. The TTL balances freshness (occurrence count grows as new logs arrive) against cost.
+
+**Why a separate `ai-service` and not inline in `incident-service`?** LLM calls are slow (1–10 seconds) and involve retry logic, token budgets, and provider-specific error handling. Isolating this in a dedicated service keeps `incident-service` fast and lets the LLM provider be swapped without redeploying the core incident pipeline. See ADR-008.

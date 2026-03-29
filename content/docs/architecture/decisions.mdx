@@ -307,3 +307,53 @@ All messages with the same key land on the same partition, and Kafka guarantees 
 - Per-tenant ordering guarantee - essential for correct clustering
 - Simple, predictable routing - given a tenantId, you know which partition its events are on
 - Natural foundation for per-tenant rate limiting at the partition level
+
+---
+
+## ADR-008: Strategy Pattern for LLM Provider
+
+**Status:** Accepted
+
+### Context
+
+The AI Summary Service must call an external LLM to generate incident summaries. The LLM landscape is fragmented: OpenAI, Azure OpenAI, Google Gemini, Anthropic, Groq, and self-hosted models all have different base URLs, authentication schemes, and request/response shapes. Hardcoding any single provider creates lock-in and makes development difficult (not everyone has a paid OpenAI key).
+
+### Decision
+
+Use the **Strategy Pattern** to abstract LLM provider selection behind a single interface.
+
+```java
+public interface LlmProvider {
+    String generateSummary(String prompt);
+}
+```
+
+Each provider implements this interface independently. The active implementation is selected at startup via `@ConditionalOnProperty`:
+
+```yaml
+# application.yml
+ai:
+  provider: groq   # swap to: openai | gemini | anthropic | azure
+```
+
+**Default provider: Groq.** Groq offers a free API tier with an OpenAI-compatible endpoint (`/openai/v1/chat/completions`), making `GroqProvider` nearly identical in code to `OpenAiProvider`. This means the system works out-of-the-box with a free API key during development.
+
+### Alternatives Considered
+
+| Alternative | Why Rejected |
+|---|---|
+| **Hardcode OpenAI** | Requires a paid API key. Breaks local dev for contributors without one. Any provider change requires code surgery across the service. |
+| **LangChain4j or Spring AI** | Adds a framework abstraction layer on top of another abstraction. For a single use case (one prompt, one response), the overhead is not justified. Direct HTTP calls give full visibility and control. |
+| **Kafka event for summary request** | Adds a new topic and consumer just to trigger an LLM call. The AI Service is already a dedicated service - a synchronous REST call from Incident Service is simpler and sufficient. |
+
+### Consequences
+
+**Accepted trade-offs:**
+- Each `LlmProvider` implementation must handle its own HTTP client, error handling, and retry logic. Some duplication across providers.
+- Adding a new provider requires a new class and a new `@ConditionalOnProperty` config block.
+
+**Benefits realized:**
+- Swap providers by changing one config line - no code changes, no redeployment of other services
+- `GroqProvider` works with a free API key, unblocking local development
+- Each provider is independently unit-testable
+- Same pattern already used in the codebase: `OccurrenceStore` interface → `InMemoryOccurrenceStore` in the Clustering Service
