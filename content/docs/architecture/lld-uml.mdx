@@ -16,7 +16,8 @@ This section documents the internal structure of each service - the classes, the
 | Clustering Service | ✅ ~95% complete | Core pipeline implemented; Redis persistence and sliding window upgrade planned |
 | Incident Service | ✅ ~80% complete | Kafka consumer, state machine, REST API, PostgreSQL (Flyway), DLQ, notifications all done. Filters and ClickHouse log lookup pending. |
 | Notification Service | ✅ ~70% complete | Kafka consumer, Slack Bot API, Block Kit alerts, DLQ done. Slack interactions, per-tenant token, WhatsApp pending. |
-| Auth Service | Planned | Not yet started |
+| Auth Service | ⬜ Planned | Class diagram and flows documented; implementation is Phase 1 |
+| AI Summary Service | ✅ ~80% complete | Strategy pattern (Groq/OpenAI/Gemini/Anthropic), PromptBuilder, async callback. Redis cache and fallback template pending. |
 
 ---
 
@@ -739,7 +740,7 @@ classDiagram
     class IncidentServiceClient {
         -RestClient restClient
         +updateAiSummary(incidentId: UUID, summary: String): void
-        Note: PATCH /api/v1/incidents/{incidentId}/ai-summary\nCalls back into Incident Service to persist result
+        Note: PATCH /api/v1/incidents/:incidentId/ai-summary\nCalls back into Incident Service to persist result
     }
 
     class SummaryRequest {
@@ -777,6 +778,163 @@ classDiagram
     AiConfig --> OpenAiProvider
     AiConfig --> GeminiProvider
     AiConfig --> AnthropicProvider
+```
+
+---
+
+## Auth Service
+
+**Responsibility:** Manage tenants, users, and API keys. Issue and validate JWT access tokens. Expose an internal API key validation endpoint for the Ingestion Gateway. Runs on port 8086.
+
+**Key design decisions:**
+- **Stateless JWT validation** — each protected service (e.g. incident-service) validates JWT locally using a shared `JWT_SECRET`. No network call to auth-service on every request. See ADR-009.
+- **API key validation is remote** — the Ingestion Gateway calls `POST /api/v1/auth/validate-key` on auth-service. Only ingestion uses API keys; all other protected services use JWT.
+- **Raw API key shown once** — only the SHA-256 hash is stored in the `API_KEY` table. The raw key is returned once at generation time and never retrievable again.
+- **Refresh token rotation** — refresh tokens are stored as SHA-256 hashes, revoked on logout, and rotated on use (each refresh issues a new refresh token and invalidates the previous one).
+- **Phase 1 is email/password only** — Google OAuth, GitHub OAuth, and Slack OAuth are planned post-Phase 1 additions (see roadmap Phase 1.3.x).
+
+```mermaid
+classDiagram
+    class AuthController {
+        -AuthService authService
+        +login(request: LoginRequest): ResponseEntity~TokenResponse~
+        +refresh(request: RefreshRequest): ResponseEntity~TokenResponse~
+        +logout(request: LogoutRequest): ResponseEntity~Void~
+        Note: POST /api/v1/auth/login\nPOST /api/v1/auth/refresh\nPOST /api/v1/auth/logout
+    }
+
+    class TenantController {
+        -TenantService tenantService
+        +createTenant(request: CreateTenantRequest): ResponseEntity~TenantResponse~
+        +getTenant(tenantId: UUID): ResponseEntity~TenantResponse~
+        Note: POST /api/v1/tenants\nGET /api/v1/tenants/:tenantId
+    }
+
+    class UserController {
+        -UserService userService
+        +registerUser(request: RegisterUserRequest): ResponseEntity~UserResponse~
+        +listUsers(tenantId: UUID, role: String): ResponseEntity~List~UserResponse~~
+        Note: POST /api/v1/users\nGET /api/v1/users?tenantId=uuid&role=ENGINEER
+    }
+
+    class ApiKeyController {
+        -ApiKeyService apiKeyService
+        +generateKey(request: CreateApiKeyRequest): ResponseEntity~ApiKeyResponse~
+        +listKeys(tenantId: UUID): ResponseEntity~List~ApiKeyResponse~~
+        +revokeKey(keyId: UUID): ResponseEntity~Void~
+        Note: POST /api/v1/auth/api-keys\nGET /api/v1/auth/api-keys\nDELETE /api/v1/auth/api-keys/:keyId
+    }
+
+    class ApiKeyValidationController {
+        -ApiKeyService apiKeyService
+        +validateKey(request: ValidateKeyRequest): ResponseEntity~Void~
+        Note: POST /api/v1/auth/validate-key\nInternal endpoint - called by ingestion-gateway only\nReturns 200 OK or 401 Unauthorized
+    }
+
+    class AuthService {
+        -UserRepository userRepository
+        -RefreshTokenRepository refreshTokenRepository
+        -JwtUtil jwtUtil
+        -PasswordEncoder passwordEncoder
+        +login(request: LoginRequest): TokenResponse
+        +refresh(refreshToken: String): TokenResponse
+        +logout(refreshToken: String): void
+        Note: Validates BCrypt password, issues access + refresh tokens\nRefresh token stored as SHA-256 hash\nLogout revokes the stored refresh token hash
+    }
+
+    class TenantService {
+        -TenantRepository tenantRepository
+        +createTenant(name: String, plan: String): Tenant
+        +getTenant(tenantId: UUID): Tenant
+        +activateTenant(tenantId: UUID): void
+        +suspendTenant(tenantId: UUID): void
+    }
+
+    class UserService {
+        -UserRepository userRepository
+        -PasswordEncoder passwordEncoder
+        +registerUser(request: RegisterUserRequest): User
+        +getUser(userId: UUID, tenantId: UUID): User
+        +listByRole(tenantId: UUID, role: String): List~User~
+    }
+
+    class ApiKeyService {
+        -ApiKeyRepository apiKeyRepository
+        +generateKey(tenantId: UUID, name: String): ApiKeyResponse
+        +validateKey(tenantId: UUID, rawKey: String): boolean
+        +revokeKey(keyId: UUID, tenantId: UUID): void
+        Note: generateKey() returns raw key once - never stored\nOnly SHA-256 hash persisted in API_KEY table\nvalidateKey() hashes input and compares to stored hash
+    }
+
+    class JwtUtil {
+        -String secret
+        -long accessTokenExpirySeconds
+        +generateToken(userId: UUID, tenantId: UUID, role: String): String
+        +validateToken(token: String): boolean
+        +extractClaims(token: String): JwtClaims
+        Note: HS256 signing · Secret from JWT_SECRET env var\nClaims: sub (userId) · tenantId · role · iat · exp\nAccess token: 1 hour · Refresh token: 30 days
+    }
+
+    class JwtAuthFilter {
+        -JwtUtil jwtUtil
+        +doFilterInternal(request, response, chain): void
+        Note: OncePerRequestFilter in each protected service\nExtracts Bearer token → validates locally → sets SecurityContext\nNo network call to auth-service (stateless) - see ADR-009\nUsed in: incident-service (Phase 1)
+    }
+
+    class Tenant {
+        -UUID tenantId
+        -String name
+        -String status
+        -String plan
+        -Instant createdAt
+        -Instant updatedAt
+        Note: status: ACTIVE | SUSPENDED\nplan: FREE | PRO
+    }
+
+    class User {
+        -UUID userId
+        -UUID tenantId
+        -String email
+        -String passwordHash
+        -String role
+        -String slackUserId
+        -String whatsappNumber
+        -Instant createdAt
+        Note: role: ADMIN | ENGINEER | VIEWER\npasswordHash: BCrypt (never returned in responses)
+    }
+
+    class ApiKey {
+        -UUID keyId
+        -UUID tenantId
+        -String keyHash
+        -String name
+        -boolean isActive
+        -Instant createdAt
+        -Instant expiresAt
+        Note: keyHash: SHA-256(rawKey) · raw key never stored
+    }
+
+    class RefreshToken {
+        -UUID tokenId
+        -UUID userId
+        -String tokenHash
+        -Instant expiresAt
+        -boolean revoked
+        Note: tokenHash: SHA-256(rawToken)\nRevoked on logout or rotation\nRotated: each refresh issues new token + revokes old
+    }
+
+    AuthController --> AuthService
+    TenantController --> TenantService
+    UserController --> UserService
+    ApiKeyController --> ApiKeyService
+    ApiKeyValidationController --> ApiKeyService
+    AuthService --> JwtUtil
+    AuthService --> User : validates credentials
+    AuthService --> RefreshToken : manages
+    UserService --> User : manages
+    TenantService --> Tenant : manages
+    ApiKeyService --> ApiKey : manages
+    JwtAuthFilter --> JwtUtil : validates locally
 ```
 
 ---

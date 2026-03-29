@@ -428,3 +428,125 @@ sequenceDiagram
 **Redis cache (Phase 9):** The AI Summary Service will cache `summary:incident:{incidentId}` with a 1-hour TTL to avoid redundant LLM calls if the same incident triggers multiple summary requests. The TTL balances freshness (occurrence count grows as new logs arrive) against cost.
 
 **Why a separate `ai-service` and not inline in `incident-service`?** LLM calls are slow (1–10 seconds) and involve retry logic, token budgets, and provider-specific error handling. Isolating this in a dedicated service keeps `incident-service` fast and lets the LLM provider be swapped without redeploying the core incident pipeline. See ADR-008.
+
+---
+
+## Auth: Login and JWT Issuance
+
+The login flow issues a short-lived JWT access token and a long-lived refresh token. All subsequent API calls carry the access token — no session state is stored in auth-service after login.
+
+```mermaid
+sequenceDiagram
+    participant FE as Frontend (3000)
+    participant AS as Auth Service (8086)
+    participant PG as PostgreSQL
+
+    FE->>AS: POST /api/v1/auth/login { email, password }
+    AS->>PG: SELECT * FROM user WHERE email = ?
+    PG-->>AS: User row (email, passwordHash, role, tenantId)
+    AS->>AS: BCrypt.matches(password, passwordHash)
+
+    alt invalid credentials
+        AS-->>FE: 401 Unauthorized
+    else valid
+        AS->>AS: JwtUtil.generateToken(userId, tenantId, role) → accessToken (1h)
+        AS->>AS: generate refreshToken → SHA-256(refreshToken) → store in DB (30d)
+        AS-->>FE: 200 OK { accessToken, refreshToken, expiresIn: 3600 }
+    end
+```
+
+**Token refresh:**
+
+```mermaid
+sequenceDiagram
+    participant FE as Frontend (3000)
+    participant AS as Auth Service (8086)
+    participant PG as PostgreSQL
+
+    FE->>AS: POST /api/v1/auth/refresh { refreshToken }
+    AS->>AS: SHA-256(refreshToken) → look up in refresh_token table
+    AS->>PG: SELECT * FROM refresh_token WHERE token_hash = ? AND revoked = false
+    PG-->>AS: token row
+
+    alt expired or revoked
+        AS-->>FE: 401 Unauthorized
+    else valid
+        AS->>PG: UPDATE refresh_token SET revoked = true (rotate old token)
+        AS->>AS: generate new refreshToken + new accessToken
+        AS->>PG: INSERT new refresh_token row
+        AS-->>FE: 200 OK { accessToken, refreshToken, expiresIn: 3600 }
+    end
+```
+
+---
+
+## Auth: JWT-Protected API Request
+
+After login, the frontend carries the JWT access token on every request to protected services. Each service validates the token locally — no call to auth-service. See ADR-009.
+
+```mermaid
+sequenceDiagram
+    participant FE as Frontend (3000)
+    participant IS as Incident Service (8083)
+    participant SC as SecurityContext
+
+    FE->>IS: GET /api/v1/incidents?tenantId=xyz<br/>Authorization: Bearer eyJhbGci...
+
+    IS->>IS: JwtAuthFilter.doFilterInternal()
+    IS->>IS: JwtUtil.validateToken(token)<br/>— verify HS256 signature with JWT_SECRET<br/>— check exp claim not expired
+
+    alt invalid or expired token
+        IS-->>FE: 401 Unauthorized
+    else valid
+        IS->>IS: JwtUtil.extractClaims() → userId, tenantId, role
+        IS->>SC: SecurityContextHolder.setAuthentication(...)
+        IS->>IS: IncidentController.listIncidents(tenantId, pageable)
+        IS-->>FE: 200 OK [ ...incidents ]
+    end
+```
+
+**Why local validation (no auth-service call)?** The JWT is cryptographically self-contained — signature + expiry are verifiable with only the signing secret. Calling auth-service on every request would add latency on the hot path and make auth-service a single point of failure. See ADR-009.
+
+---
+
+## Auth: API Key Validation (Ingestion Path)
+
+Customer services sending logs authenticate with an API key, not a JWT. The Ingestion Gateway validates the key against auth-service on every request. This path is separate from the JWT path because it targets machine-to-machine ingestion, not human users.
+
+```mermaid
+sequenceDiagram
+    participant SDK as Customer Service (SDK)
+    participant IG as Ingestion Gateway (8080)
+    participant AS as Auth Service (8086)
+    participant PG as PostgreSQL
+
+    SDK->>IG: POST /api/v1/logs<br/>X-TENANT-ID: uuid<br/>X-API-KEY: ak_rawkey123
+
+    IG->>AS: POST /api/v1/auth/validate-key<br/>{ tenantId, apiKey: ak_rawkey123 }
+    AS->>AS: SHA-256(ak_rawkey123) → keyHash
+    AS->>PG: SELECT * FROM api_key<br/>WHERE tenant_id = ? AND key_hash = ?<br/>AND is_active = true<br/>AND (expires_at IS NULL OR expires_at > NOW())
+
+    alt key not found or inactive
+        AS-->>IG: 401 Unauthorized
+        IG-->>SDK: 401 Unauthorized
+    else valid key
+        AS-->>IG: 200 OK
+        IG->>IG: publish to Kafka raw-logs topic
+        IG-->>SDK: 202 Accepted
+    end
+```
+
+**API key generation** (by tenant admin via frontend):
+
+```mermaid
+sequenceDiagram
+    participant FE as Frontend (Admin)
+    participant AS as Auth Service (8086)
+    participant PG as PostgreSQL
+
+    FE->>AS: POST /api/v1/auth/api-keys<br/>Authorization: Bearer adminJwt<br/>{ name: "production-key" }
+    AS->>AS: generate rawKey (UUID-based, high entropy)
+    AS->>AS: keyHash = SHA-256(rawKey)
+    AS->>PG: INSERT INTO api_key (tenant_id, key_hash, name, is_active)
+    AS-->>FE: 201 Created { keyId, rawKey, name, createdAt }<br/>⚠ rawKey shown ONCE — not stored, not retrievable
+```
