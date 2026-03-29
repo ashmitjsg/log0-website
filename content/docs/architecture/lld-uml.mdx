@@ -787,11 +787,11 @@ classDiagram
 **Responsibility:** Manage tenants, users, and API keys. Issue and validate JWT access tokens. Expose an internal API key validation endpoint for the Ingestion Gateway. Runs on port 8086.
 
 **Key design decisions:**
-- **Stateless JWT validation** — each protected service (e.g. incident-service) validates JWT locally using a shared `JWT_SECRET`. No network call to auth-service on every request. See ADR-009.
-- **API key validation is remote** — the Ingestion Gateway calls `POST /api/v1/auth/validate-key` on auth-service. Only ingestion uses API keys; all other protected services use JWT.
-- **Raw API key shown once** — only the SHA-256 hash is stored in the `API_KEY` table. The raw key is returned once at generation time and never retrievable again.
-- **Refresh token rotation** — refresh tokens are stored as SHA-256 hashes, revoked on logout, and rotated on use (each refresh issues a new refresh token and invalidates the previous one).
-- **Phase 1 is email/password only** — Google OAuth, GitHub OAuth, and Slack OAuth are planned post-Phase 1 additions (see roadmap Phase 1.3.x).
+- **Stateless JWT validation** - each protected service (e.g. incident-service) validates JWT locally using a shared `JWT_SECRET`. No network call to auth-service on every request. See ADR-009.
+- **API key validation is remote** - the Ingestion Gateway calls `POST /api/v1/auth/validate-key` on auth-service. Only ingestion uses API keys; all other protected services use JWT.
+- **Raw API key shown once** - only the SHA-256 hash is stored in the `API_KEY` table. The raw key is returned once at generation time and never retrievable again.
+- **Refresh token rotation** - refresh tokens are stored as SHA-256 hashes, revoked on logout, and rotated on use (each refresh issues a new refresh token and invalidates the previous one).
+- **Phase 1 is email/password only** - Google OAuth, GitHub OAuth, and Slack OAuth are planned post-Phase 1 additions (see roadmap Phase 1.3.x).
 
 ```mermaid
 classDiagram

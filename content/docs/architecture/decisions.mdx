@@ -368,20 +368,20 @@ ai:
 
 log0 has a dedicated auth-service (port 8086) that issues JWT access tokens on login. When a protected service (e.g. incident-service) receives a request carrying a JWT, it must verify the token is valid. There are two architectural options:
 
-1. **Remote validation** — each service calls auth-service on every request: `GET /api/v1/auth/validate?token=...`
-2. **Local validation** — each service validates the JWT locally using the shared `JWT_SECRET` signing key
+1. **Remote validation** - each service calls auth-service on every request: `GET /api/v1/auth/validate?token=...`
+2. **Local validation** - each service validates the JWT locally using the shared `JWT_SECRET` signing key
 
 ### Decision
 
-Use **local (stateless) JWT validation** in every protected service via a `JwtAuthFilter` (`OncePerRequestFilter`). Each service holds the `JWT_SECRET` as an environment variable and verifies the HS256 signature and `exp` claim directly — no network call to auth-service.
+Use **local (stateless) JWT validation** in every protected service via a `JwtAuthFilter` (`OncePerRequestFilter`). Each service holds the `JWT_SECRET` as an environment variable and verifies the HS256 signature and `exp` claim directly - no network call to auth-service.
 
-API key validation (ingestion path) remains **remote** — the Ingestion Gateway calls `POST /api/v1/auth/validate-key` on auth-service because API keys require a database lookup (hash comparison against the `API_KEY` table) that cannot be done statelessly.
+API key validation (ingestion path) remains **remote** - the Ingestion Gateway calls `POST /api/v1/auth/validate-key` on auth-service because API keys require a database lookup (hash comparison against the `API_KEY` table) that cannot be done statelessly.
 
 ### Alternatives Considered
 
 | Alternative | Why Rejected |
 |---|---|
-| **Remote JWT validation on every request** | Adds network latency on every authenticated API call. Makes auth-service a synchronous dependency — if it is slow or down, all API calls fail. Unnecessary given JWT is cryptographically self-verifiable. |
+| **Remote JWT validation on every request** | Adds network latency on every authenticated API call. Makes auth-service a synchronous dependency - if it is slow or down, all API calls fail. Unnecessary given JWT is cryptographically self-verifiable. |
 | **API Gateway handling all auth** | Would require introducing Spring Cloud Gateway or a similar proxy. Adds infrastructure complexity that is not justified for the current number of services. Can be added later without changing the JWT design. |
 | **Opaque tokens (session IDs)** | Would require a stateful session store (Redis) shared across services. Adds infrastructure dependency and per-request DB lookup. JWT's stateless verifiability is a key advantage for a distributed system. |
 
@@ -389,10 +389,10 @@ API key validation (ingestion path) remains **remote** — the Ingestion Gateway
 
 **Accepted trade-offs:**
 - `JWT_SECRET` must be shared across all services that validate tokens. Secret rotation requires redeployment of all protected services simultaneously.
-- Issued tokens cannot be revoked before expiry (short 1-hour TTL mitigates this). Logout only revokes the refresh token — the access token remains valid until it expires.
-- Each protected service must include `JwtAuthFilter` and `JwtUtil` — small duplication, mitigated by a shared library (Phase 0.4).
+- Issued tokens cannot be revoked before expiry (short 1-hour TTL mitigates this). Logout only revokes the refresh token - the access token remains valid until it expires.
+- Each protected service must include `JwtAuthFilter` and `JwtUtil` - small duplication, mitigated by a shared library (Phase 0.4).
 
 **Benefits:**
-- Zero latency overhead on the hot API path — no auth-service call per request
+- Zero latency overhead on the hot API path - no auth-service call per request
 - auth-service is not a runtime dependency of incident-service for reads
-- Horizontally scalable — each service instance validates independently with no shared state
+- Horizontally scalable - each service instance validates independently with no shared state

@@ -433,7 +433,7 @@ sequenceDiagram
 
 ## Auth: Login and JWT Issuance
 
-The login flow issues a short-lived JWT access token and a long-lived refresh token. All subsequent API calls carry the access token — no session state is stored in auth-service after login.
+The login flow issues a short-lived JWT access token and a long-lived refresh token. All subsequent API calls carry the access token - no session state is stored in auth-service after login.
 
 ```mermaid
 sequenceDiagram
@@ -482,7 +482,7 @@ sequenceDiagram
 
 ## Auth: JWT-Protected API Request
 
-After login, the frontend carries the JWT access token on every request to protected services. Each service validates the token locally — no call to auth-service. See ADR-009.
+After login, the frontend carries the JWT access token on every request to protected services. Each service validates the token locally - no call to auth-service. See ADR-009.
 
 ```mermaid
 sequenceDiagram
@@ -493,7 +493,7 @@ sequenceDiagram
     FE->>IS: GET /api/v1/incidents?tenantId=xyz<br/>Authorization: Bearer eyJhbGci...
 
     IS->>IS: JwtAuthFilter.doFilterInternal()
-    IS->>IS: JwtUtil.validateToken(token)<br/>— verify HS256 signature with JWT_SECRET<br/>— check exp claim not expired
+    IS->>IS: JwtUtil.validateToken(token)<br/>- verify HS256 signature with JWT_SECRET<br/>- check exp claim not expired
 
     alt invalid or expired token
         IS-->>FE: 401 Unauthorized
@@ -505,7 +505,7 @@ sequenceDiagram
     end
 ```
 
-**Why local validation (no auth-service call)?** The JWT is cryptographically self-contained — signature + expiry are verifiable with only the signing secret. Calling auth-service on every request would add latency on the hot path and make auth-service a single point of failure. See ADR-009.
+**Why local validation (no auth-service call)?** The JWT is cryptographically self-contained - signature + expiry are verifiable with only the signing secret. Calling auth-service on every request would add latency on the hot path and make auth-service a single point of failure. See ADR-009.
 
 ---
 
@@ -548,5 +548,5 @@ sequenceDiagram
     AS->>AS: generate rawKey (UUID-based, high entropy)
     AS->>AS: keyHash = SHA-256(rawKey)
     AS->>PG: INSERT INTO api_key (tenant_id, key_hash, name, is_active)
-    AS-->>FE: 201 Created { keyId, rawKey, name, createdAt }<br/>⚠ rawKey shown ONCE — not stored, not retrievable
+    AS-->>FE: 201 Created { keyId, rawKey, name, createdAt }<br/>⚠ rawKey shown ONCE - not stored, not retrievable
 ```

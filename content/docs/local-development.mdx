@@ -21,22 +21,22 @@ Make sure these are installed before you begin:
 
 Start Kafka, Zookeeper, and PostgreSQL via Docker Compose. This also auto-creates all required Kafka topics.
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
-    cd docker\kafka
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
+  <Tab value="Linux/macOS">
+    ```bash
+    cd docker/kafka
     docker-compose up -d
     ```
   </Tab>
-  <Tab value="Windows PowerShell">
+<Tab value="Windows PowerShell">
     ```powershell
     cd docker\kafka
     docker-compose up -d
     ```
   </Tab>
-  <Tab value="Linux/macOS">
-    ```bash
-    cd docker/kafka
+<Tab value="Windows CMD">
+    ```cmd
+    cd docker\kafka
     docker-compose up -d
     ```
   </Tab>
@@ -44,19 +44,19 @@ Start Kafka, Zookeeper, and PostgreSQL via Docker Compose. This also auto-create
 
 Verify all three containers are running:
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
+  <Tab value="Linux/macOS">
+    ```bash
     docker ps
     ```
   </Tab>
-  <Tab value="Windows PowerShell">
+<Tab value="Windows PowerShell">
     ```powershell
     docker ps
     ```
   </Tab>
-  <Tab value="Linux/macOS">
-    ```bash
+<Tab value="Windows CMD">
+    ```cmd
     docker ps
     ```
   </Tab>
@@ -68,7 +68,7 @@ You should see `log0-kafka`, `log0-zookeeper`, and `log0-postgres` in the output
 
 ## Step 2 - Environment Variables
 
-The **notification-service** requires Slack credentials and the **ai-service** requires an LLM provider API key at startup. The other four services need no additional configuration.
+The **notification-service** requires Slack credentials, the **ai-service** requires an LLM provider API key, and the **auth-service** requires a JWT signing secret at startup. The other services need no additional configuration.
 
 ### Getting Your Slack Credentials
 
@@ -91,12 +91,12 @@ The **notification-service** requires Slack credentials and the **ai-service** r
 
 Create a `.env` file inside `services/notification-service/`:
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
-    cd services\notification-service
-    copy .env.example .env
-    notepad .env
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
+  <Tab value="Linux/macOS">
+    ```bash
+    cd services/notification-service
+    cp .env.example .env
+    nano .env   # or vim, code, etc.
     ```
     Fill in your real values:
     ```
@@ -104,7 +104,7 @@ Create a `.env` file inside `services/notification-service/`:
     SLACK_CHANNEL_ID=C0XXXXXXXXX
     ```
   </Tab>
-  <Tab value="Windows PowerShell">
+<Tab value="Windows PowerShell">
     ```powershell
     cd services\notification-service
     Copy-Item .env.example .env
@@ -116,11 +116,11 @@ Create a `.env` file inside `services/notification-service/`:
     SLACK_CHANNEL_ID=C0XXXXXXXXX
     ```
   </Tab>
-  <Tab value="Linux/macOS">
-    ```bash
-    cd services/notification-service
-    cp .env.example .env
-    nano .env   # or vim, code, etc.
+<Tab value="Windows CMD">
+    ```cmd
+    cd services\notification-service
+    copy .env.example .env
+    notepad .env
     ```
     Fill in your real values:
     ```
@@ -136,31 +136,9 @@ The `.env` file is gitignored - your credentials will never be committed.
 
 ### AI Service credentials
 
-The **ai-service** uses [Groq](https://console.groq.com) by default — free tier, no credit card required. Get a key at [console.groq.com](https://console.groq.com), then:
+The **ai-service** uses [Groq](https://console.groq.com) by default - free tier, no credit card required. Get a key at [console.groq.com](https://console.groq.com), then:
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
-    cd services\ai-service
-    copy .env.example .env
-    notepad .env
-    ```
-    Fill in your Groq key:
-    ```
-    GROQ_API_KEY=gsk_your-actual-key-here
-    ```
-  </Tab>
-  <Tab value="Windows PowerShell">
-    ```powershell
-    cd services\ai-service
-    Copy-Item .env.example .env
-    notepad .env
-    ```
-    Fill in your Groq key:
-    ```
-    GROQ_API_KEY=gsk_your-actual-key-here
-    ```
-  </Tab>
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
   <Tab value="Linux/macOS">
     ```bash
     cd services/ai-service
@@ -172,9 +150,100 @@ The **ai-service** uses [Groq](https://console.groq.com) by default — free tie
     GROQ_API_KEY=gsk_your-actual-key-here
     ```
   </Tab>
+<Tab value="Windows PowerShell">
+    ```powershell
+    cd services\ai-service
+    Copy-Item .env.example .env
+    notepad .env
+    ```
+    Fill in your Groq key:
+    ```
+    GROQ_API_KEY=gsk_your-actual-key-here
+    ```
+  </Tab>
+<Tab value="Windows CMD">
+    ```cmd
+    cd services\ai-service
+    copy .env.example .env
+    notepad .env
+    ```
+    Fill in your Groq key:
+    ```
+    GROQ_API_KEY=gsk_your-actual-key-here
+    ```
+  </Tab>
 </Tabs>
 
-The other three keys (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`) are optional — only needed if you switch `ai.provider` in `services/ai-service/src/main/resources/application.yml`.
+The other three keys (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`) are optional - only needed if you switch `ai.provider` in `services/ai-service/src/main/resources/application.yml`.
+
+### Auth Service credentials
+
+The **auth-service** requires a `JWT_SECRET` - a random string of at least 32 characters used to sign and verify JWT tokens with HS256. Generate one and set it in `services/auth-service/.env`:
+
+**Step 1 - Generate a secret:**
+
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
+  <Tab value="Linux/macOS">
+    ```bash
+    openssl rand -base64 48
+    ```
+    Or using only built-in tools:
+    ```bash
+    cat /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48
+    ```
+  </Tab>
+<Tab value="Windows PowerShell">
+    ```powershell
+    -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 48 | % {[char]$_})
+    ```
+    This picks 48 random characters from A–Z, a–z, 0–9 and joins them into a single string. Copy the output - that's your secret.
+  </Tab>
+<Tab value="Windows CMD">
+    CMD does not have a built-in random string generator. Use PowerShell instead (run `powershell` to open it), or manually type any 48-character random string.
+  </Tab>
+</Tabs>
+
+**Step 2 - Create the `.env` file:**
+
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
+  <Tab value="Linux/macOS">
+    ```bash
+    cd services/auth-service
+    cp .env.example .env
+    nano .env   # or vim, code, etc.
+    ```
+    Fill in your generated secret:
+    ```
+    JWT_SECRET=your-generated-48-char-secret-here
+    ```
+  </Tab>
+<Tab value="Windows PowerShell">
+    ```powershell
+    cd services\auth-service
+    Copy-Item .env.example .env
+    notepad .env
+    ```
+    Fill in your generated secret:
+    ```
+    JWT_SECRET=your-generated-48-char-secret-here
+    ```
+  </Tab>
+<Tab value="Windows CMD">
+    ```cmd
+    cd services\auth-service
+    copy .env.example .env
+    notepad .env
+    ```
+    Fill in your generated secret:
+    ```
+    JWT_SECRET=your-generated-48-char-secret-here
+    ```
+  </Tab>
+</Tabs>
+
+The `.env` file is gitignored - your secret will never be committed.
+
+> **Why at least 32 characters?** HS256 (HMAC-SHA256) requires a key of at least 256 bits (32 bytes). Shorter secrets are rejected by the JWT library at startup. 48 characters from the alphanumeric set gives ~285 bits of entropy - comfortably above the minimum.
 
 ---
 
@@ -184,92 +253,92 @@ Open **5 separate terminals** - one per service. All commands run from the proje
 
 ### Terminal 1 - Ingestion Gateway (port 8080)
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
-    cd services\ingestion-gateway
-    mvnw.cmd spring-boot:run
-    ```
-  </Tab>
-  <Tab value="Windows PowerShell">
-    ```powershell
-    cd services\ingestion-gateway
-    .\mvnw.cmd spring-boot:run
-    ```
-  </Tab>
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
   <Tab value="Linux/macOS">
     ```bash
     cd services/ingestion-gateway
     ./mvnw spring-boot:run
     ```
   </Tab>
+<Tab value="Windows PowerShell">
+    ```powershell
+    cd services\ingestion-gateway
+    .\mvnw.cmd spring-boot:run
+    ```
+  </Tab>
+<Tab value="Windows CMD">
+    ```cmd
+    cd services\ingestion-gateway
+    mvnw.cmd spring-boot:run
+    ```
+  </Tab>
 </Tabs>
 
 ### Terminal 2 - Normalization Service (port 8081)
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
-    cd services\normalization-service
-    mvnw.cmd spring-boot:run
-    ```
-  </Tab>
-  <Tab value="Windows PowerShell">
-    ```powershell
-    cd services\normalization-service
-    .\mvnw.cmd spring-boot:run
-    ```
-  </Tab>
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
   <Tab value="Linux/macOS">
     ```bash
     cd services/normalization-service
     ./mvnw spring-boot:run
     ```
   </Tab>
+<Tab value="Windows PowerShell">
+    ```powershell
+    cd services\normalization-service
+    .\mvnw.cmd spring-boot:run
+    ```
+  </Tab>
+<Tab value="Windows CMD">
+    ```cmd
+    cd services\normalization-service
+    mvnw.cmd spring-boot:run
+    ```
+  </Tab>
 </Tabs>
 
 ### Terminal 3 - Clustering Service (port 8082)
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
-    cd services\clustering-service
-    mvnw.cmd spring-boot:run
-    ```
-  </Tab>
-  <Tab value="Windows PowerShell">
-    ```powershell
-    cd services\clustering-service
-    .\mvnw.cmd spring-boot:run
-    ```
-  </Tab>
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
   <Tab value="Linux/macOS">
     ```bash
     cd services/clustering-service
     ./mvnw spring-boot:run
     ```
   </Tab>
+<Tab value="Windows PowerShell">
+    ```powershell
+    cd services\clustering-service
+    .\mvnw.cmd spring-boot:run
+    ```
+  </Tab>
+<Tab value="Windows CMD">
+    ```cmd
+    cd services\clustering-service
+    mvnw.cmd spring-boot:run
+    ```
+  </Tab>
 </Tabs>
 
 ### Terminal 4 - Incident Service (port 8083)
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
-    cd services\incident-service
-    mvnw.cmd spring-boot:run
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
+  <Tab value="Linux/macOS">
+    ```bash
+    cd services/incident-service
+    ./mvnw spring-boot:run
     ```
   </Tab>
-  <Tab value="Windows PowerShell">
+<Tab value="Windows PowerShell">
     ```powershell
     cd services\incident-service
     .\mvnw.cmd spring-boot:run
     ```
   </Tab>
-  <Tab value="Linux/macOS">
-    ```bash
-    cd services/incident-service
-    ./mvnw spring-boot:run
+<Tab value="Windows CMD">
+    ```cmd
+    cd services\incident-service
+    mvnw.cmd spring-boot:run
     ```
   </Tab>
 </Tabs>
@@ -278,26 +347,26 @@ Open **5 separate terminals** - one per service. All commands run from the proje
 
 This service needs Slack env vars loaded before it starts.
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
-    cd services\notification-service
-    for /f "tokens=1,2 delims==" %i in (.env) do set %i=%j
-    mvnw.cmd spring-boot:run
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
+  <Tab value="Linux/macOS">
+    ```bash
+    cd services/notification-service
+    export $(cat .env | xargs)
+    ./mvnw spring-boot:run
     ```
   </Tab>
-  <Tab value="Windows PowerShell">
+<Tab value="Windows PowerShell">
     ```powershell
     cd services\notification-service
     Get-Content .env | ForEach-Object { $k,$v = $_ -split '=',2; [System.Environment]::SetEnvironmentVariable($k,$v) }
     .\mvnw.cmd spring-boot:run
     ```
   </Tab>
-  <Tab value="Linux/macOS">
-    ```bash
-    cd services/notification-service
-    export $(cat .env | xargs)
-    ./mvnw spring-boot:run
+<Tab value="Windows CMD">
+    ```cmd
+    cd services\notification-service
+    for /f "tokens=1,2 delims==" %i in (.env) do set %i=%j
+    mvnw.cmd spring-boot:run
     ```
   </Tab>
 </Tabs>
@@ -306,26 +375,26 @@ This service needs Slack env vars loaded before it starts.
 
 This service needs the Groq API key loaded before it starts.
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
-    cd services\ai-service
-    for /f "tokens=1,2 delims==" %i in (.env) do @if not "%i:~0,1%"=="#" set "%i=%j"
-    mvnw.cmd spring-boot:run
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
+  <Tab value="Linux/macOS">
+    ```bash
+    cd services/ai-service
+    export $(cat .env | grep -v '^#' | xargs)
+    ./mvnw spring-boot:run
     ```
   </Tab>
-  <Tab value="Windows PowerShell">
+<Tab value="Windows PowerShell">
     ```powershell
     cd services\ai-service
     Get-Content .env | Where-Object { $_ -notmatch '^#' -and $_ -match '=' } | ForEach-Object { $k,$v = $_ -split '=',2; Set-Item "env:$k" $v }
     .\mvnw.cmd spring-boot:run
     ```
   </Tab>
-  <Tab value="Linux/macOS">
-    ```bash
-    cd services/ai-service
-    export $(cat .env | grep -v '^#' | xargs)
-    ./mvnw spring-boot:run
+<Tab value="Windows CMD">
+    ```cmd
+    cd services\ai-service
+    for /f "tokens=1,2 delims==" %i in (.env) do @if not "%i:~0,1%"=="#" set "%i=%j"
+    mvnw.cmd spring-boot:run
     ```
   </Tab>
 </Tabs>
@@ -336,9 +405,9 @@ This service needs the Groq API key loaded before it starts.
 
 Once all services have printed `Started ... in ... seconds`, verify they are all up:
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
+  <Tab value="Linux/macOS">
+    ```bash
     curl http://localhost:8080/actuator/health
     curl http://localhost:8082/actuator/health
     curl http://localhost:8083/actuator/health
@@ -346,7 +415,7 @@ Once all services have printed `Started ... in ... seconds`, verify they are all
     curl http://localhost:8085/actuator/health
     ```
   </Tab>
-  <Tab value="Windows PowerShell">
+<Tab value="Windows PowerShell">
     ```powershell
     Invoke-RestMethod http://localhost:8080/actuator/health
     Invoke-RestMethod http://localhost:8082/actuator/health
@@ -355,8 +424,8 @@ Once all services have printed `Started ... in ... seconds`, verify they are all
     Invoke-RestMethod http://localhost:8085/actuator/health
     ```
   </Tab>
-  <Tab value="Linux/macOS">
-    ```bash
+<Tab value="Windows CMD">
+    ```cmd
     curl http://localhost:8080/actuator/health
     curl http://localhost:8082/actuator/health
     curl http://localhost:8083/actuator/health
@@ -368,12 +437,12 @@ Once all services have printed `Started ... in ... seconds`, verify they are all
 
 Every endpoint should return `{"status":"UP"}`.
 
-> **Note:** normalization-service is Kafka-only and does not expose an HTTP port — it has no actuator endpoint to check.
+> **Note:** normalization-service is Kafka-only and does not expose an HTTP port - it has no actuator endpoint to check.
 
 | Service | Port | Role |
 |---|---|---|
 | ingestion-gateway | 8080 | Receives logs from clients |
-| normalization-service | — (Kafka only) | Parses and fingerprints logs |
+| normalization-service | - (Kafka only) | Parses and fingerprints logs |
 | clustering-service | 8082 | Counts occurrences, triggers incidents |
 | incident-service | 8083 | Stores incidents, exposes REST API |
 | notification-service | 8084 | Sends Slack alerts |
@@ -385,19 +454,24 @@ Every endpoint should return `{"status":"UP"}`.
 
 Send a single test log to confirm the ingestion gateway accepts it. A `202 Accepted` means the log was published to Kafka.
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
-    curl -X POST http://localhost:8080/api/v1/logs ^
-      -H "Content-Type: application/json" ^
-      -H "X-TENANT-ID: 550e8400-e29b-41d4-a716-446655440000" ^
-      -H "X-SERVICE-NAME: payment-service" ^
-      -H "X-ENVIRONMENT: production" ^
-      -H "X-API-KEY: test-key-123" ^
-      -d "{\"timestamp\":\"2026-03-28T10:30:00Z\",\"level\":\"ERROR\",\"message\":\"Database connection timeout after 30s\",\"trace\":\"java.sql.SQLException: Connection timeout\"}"
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
+  <Tab value="Linux/macOS">
+    ```bash
+    curl -X POST http://localhost:8080/api/v1/logs \
+      -H "Content-Type: application/json" \
+      -H "X-TENANT-ID: 550e8400-e29b-41d4-a716-446655440000" \
+      -H "X-SERVICE-NAME: payment-service" \
+      -H "X-ENVIRONMENT: production" \
+      -H "X-API-KEY: test-key-123" \
+      -d '{
+        "timestamp": "2026-03-28T10:30:00Z",
+        "level": "ERROR",
+        "message": "Database connection timeout after 30s",
+        "trace": "java.sql.SQLException: Connection timeout"
+      }'
     ```
   </Tab>
-  <Tab value="Windows PowerShell">
+<Tab value="Windows PowerShell">
     ```powershell
     $body = @{
         timestamp = "2026-03-28T10:30:00Z"
@@ -418,20 +492,15 @@ Send a single test log to confirm the ingestion gateway accepts it. A `202 Accep
       -Body $body
     ```
   </Tab>
-  <Tab value="Linux/macOS">
-    ```bash
-    curl -X POST http://localhost:8080/api/v1/logs \
-      -H "Content-Type: application/json" \
-      -H "X-TENANT-ID: 550e8400-e29b-41d4-a716-446655440000" \
-      -H "X-SERVICE-NAME: payment-service" \
-      -H "X-ENVIRONMENT: production" \
-      -H "X-API-KEY: test-key-123" \
-      -d '{
-        "timestamp": "2026-03-28T10:30:00Z",
-        "level": "ERROR",
-        "message": "Database connection timeout after 30s",
-        "trace": "java.sql.SQLException: Connection timeout"
-      }'
+<Tab value="Windows CMD">
+    ```cmd
+    curl -X POST http://localhost:8080/api/v1/logs ^
+      -H "Content-Type: application/json" ^
+      -H "X-TENANT-ID: 550e8400-e29b-41d4-a716-446655440000" ^
+      -H "X-SERVICE-NAME: payment-service" ^
+      -H "X-ENVIRONMENT: production" ^
+      -H "X-API-KEY: test-key-123" ^
+      -d "{\"timestamp\":\"2026-03-28T10:30:00Z\",\"level\":\"ERROR\",\"message\":\"Database connection timeout after 30s\",\"trace\":\"java.sql.SQLException: Connection timeout\"}"
     ```
   </Tab>
 </Tabs>
@@ -453,17 +522,7 @@ The first incident row should contain a structured summary from the LLM within a
 
 You can also test ai-service independently without going through the full pipeline. With ai-service running, send a direct POST:
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
-    curl -X POST http://localhost:8085/api/v1/summaries -H "Content-Type: application/json" -d "{\"incidentId\":\"00000000-0000-0000-0000-000000000001\",\"tenantId\":\"test-tenant\",\"serviceName\":\"payment-service\",\"environment\":\"production\",\"severity\":\"HIGH\",\"occurrenceCount\":42,\"firstSeenAt\":\"2024-01-01T10:00:00Z\",\"lastSeenAt\":\"2024-01-01T11:00:00Z\",\"topMessages\":[\"Connection refused: db-host:5432\",\"Timeout waiting for connection from pool\"]}"
-    ```
-  </Tab>
-  <Tab value="Windows PowerShell">
-    ```powershell
-    Invoke-RestMethod -Uri "http://localhost:8085/api/v1/summaries" -Method POST -ContentType "application/json" -Body '{"incidentId":"00000000-0000-0000-0000-000000000001","tenantId":"test-tenant","serviceName":"payment-service","environment":"production","severity":"HIGH","occurrenceCount":42,"firstSeenAt":"2024-01-01T10:00:00Z","lastSeenAt":"2024-01-01T11:00:00Z","topMessages":["Connection refused: db-host:5432","Timeout waiting for connection from pool"]}'
-    ```
-  </Tab>
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
   <Tab value="Linux/macOS">
     ```bash
     curl -X POST http://localhost:8085/api/v1/summaries \
@@ -484,9 +543,19 @@ You can also test ai-service independently without going through the full pipeli
       }'
     ```
   </Tab>
+<Tab value="Windows PowerShell">
+    ```powershell
+    Invoke-RestMethod -Uri "http://localhost:8085/api/v1/summaries" -Method POST -ContentType "application/json" -Body '{"incidentId":"00000000-0000-0000-0000-000000000001","tenantId":"test-tenant","serviceName":"payment-service","environment":"production","severity":"HIGH","occurrenceCount":42,"firstSeenAt":"2024-01-01T10:00:00Z","lastSeenAt":"2024-01-01T11:00:00Z","topMessages":["Connection refused: db-host:5432","Timeout waiting for connection from pool"]}'
+    ```
+  </Tab>
+<Tab value="Windows CMD">
+    ```cmd
+    curl -X POST http://localhost:8085/api/v1/summaries -H "Content-Type: application/json" -d "{\"incidentId\":\"00000000-0000-0000-0000-000000000001\",\"tenantId\":\"test-tenant\",\"serviceName\":\"payment-service\",\"environment\":\"production\",\"severity\":\"HIGH\",\"occurrenceCount\":42,\"firstSeenAt\":\"2024-01-01T10:00:00Z\",\"lastSeenAt\":\"2024-01-01T11:00:00Z\",\"topMessages\":[\"Connection refused: db-host:5432\",\"Timeout waiting for connection from pool\"]}"
+    ```
+  </Tab>
 </Tabs>
 
-Expected response: `202 Accepted`. Check the ai-service logs — you should see the Groq API call succeed, then a callback attempt to incident-service (which will fail with a connection error if incident-service is not running — that's expected and handled gracefully).
+Expected response: `202 Accepted`. Check the ai-service logs - you should see the Groq API call succeed, then a callback attempt to incident-service (which will fail with a connection error if incident-service is not running - that's expected and handled gracefully).
 
 ---
 
@@ -496,17 +565,7 @@ Open additional terminals to watch messages flowing through the pipeline in real
 
 ### raw-logs (ingestion output)
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
-    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic raw-logs --from-beginning --property print.key=true
-    ```
-  </Tab>
-  <Tab value="Windows PowerShell">
-    ```powershell
-    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic raw-logs --from-beginning --property print.key=true
-    ```
-  </Tab>
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
   <Tab value="Linux/macOS">
     ```bash
     docker exec -it log0-kafka kafka-console-consumer \
@@ -516,21 +575,21 @@ Open additional terminals to watch messages flowing through the pipeline in real
       --property print.key=true
     ```
   </Tab>
+<Tab value="Windows PowerShell">
+    ```powershell
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic raw-logs --from-beginning --property print.key=true
+    ```
+  </Tab>
+<Tab value="Windows CMD">
+    ```cmd
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic raw-logs --from-beginning --property print.key=true
+    ```
+  </Tab>
 </Tabs>
 
 ### normalized-logs (after normalization + fingerprinting)
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
-    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic normalized-logs --from-beginning --property print.key=true
-    ```
-  </Tab>
-  <Tab value="Windows PowerShell">
-    ```powershell
-    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic normalized-logs --from-beginning --property print.key=true
-    ```
-  </Tab>
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
   <Tab value="Linux/macOS">
     ```bash
     docker exec -it log0-kafka kafka-console-consumer \
@@ -540,21 +599,21 @@ Open additional terminals to watch messages flowing through the pipeline in real
       --property print.key=true
     ```
   </Tab>
+<Tab value="Windows PowerShell">
+    ```powershell
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic normalized-logs --from-beginning --property print.key=true
+    ```
+  </Tab>
+<Tab value="Windows CMD">
+    ```cmd
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic normalized-logs --from-beginning --property print.key=true
+    ```
+  </Tab>
 </Tabs>
 
 ### incident-events (fires after 10 occurrences of the same fingerprint)
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
-    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic incident-events --from-beginning --property print.key=true
-    ```
-  </Tab>
-  <Tab value="Windows PowerShell">
-    ```powershell
-    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic incident-events --from-beginning --property print.key=true
-    ```
-  </Tab>
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
   <Tab value="Linux/macOS">
     ```bash
     docker exec -it log0-kafka kafka-console-consumer \
@@ -564,21 +623,21 @@ Open additional terminals to watch messages flowing through the pipeline in real
       --property print.key=true
     ```
   </Tab>
+<Tab value="Windows PowerShell">
+    ```powershell
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic incident-events --from-beginning --property print.key=true
+    ```
+  </Tab>
+<Tab value="Windows CMD">
+    ```cmd
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic incident-events --from-beginning --property print.key=true
+    ```
+  </Tab>
 </Tabs>
 
 ### notification-events (triggers Slack messages)
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
-    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic notification-events --from-beginning --property print.key=true
-    ```
-  </Tab>
-  <Tab value="Windows PowerShell">
-    ```powershell
-    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic notification-events --from-beginning --property print.key=true
-    ```
-  </Tab>
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
   <Tab value="Linux/macOS">
     ```bash
     docker exec -it log0-kafka kafka-console-consumer \
@@ -588,21 +647,21 @@ Open additional terminals to watch messages flowing through the pipeline in real
       --property print.key=true
     ```
   </Tab>
+<Tab value="Windows PowerShell">
+    ```powershell
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic notification-events --from-beginning --property print.key=true
+    ```
+  </Tab>
+<Tab value="Windows CMD">
+    ```cmd
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic notification-events --from-beginning --property print.key=true
+    ```
+  </Tab>
 </Tabs>
 
 ### raw-logs-dlq (dead letter queue - should stay empty)
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
-    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic raw-logs-dlq --from-beginning
-    ```
-  </Tab>
-  <Tab value="Windows PowerShell">
-    ```powershell
-    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic raw-logs-dlq --from-beginning
-    ```
-  </Tab>
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
   <Tab value="Linux/macOS">
     ```bash
     docker exec -it log0-kafka kafka-console-consumer \
@@ -611,29 +670,23 @@ Open additional terminals to watch messages flowing through the pipeline in real
       --from-beginning
     ```
   </Tab>
+<Tab value="Windows PowerShell">
+    ```powershell
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic raw-logs-dlq --from-beginning
+    ```
+  </Tab>
+<Tab value="Windows CMD">
+    ```cmd
+    docker exec -it log0-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic raw-logs-dlq --from-beginning
+    ```
+  </Tab>
 </Tabs>
 
 ### Check consumer group lag
 
 Zero lag means all services are caught up. Lag > 0 means a service is behind or crashed.
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
-    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group normalization-service
-    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group clustering-service
-    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group incident-service
-    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group notification-service
-    ```
-  </Tab>
-  <Tab value="Windows PowerShell">
-    ```powershell
-    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group normalization-service
-    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group clustering-service
-    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group incident-service
-    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group notification-service
-    ```
-  </Tab>
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
   <Tab value="Linux/macOS">
     ```bash
     for group in normalization-service clustering-service incident-service notification-service; do
@@ -642,6 +695,22 @@ Zero lag means all services are caught up. Lag > 0 means a service is behind or 
         --bootstrap-server localhost:9092 \
         --describe --group $group
     done
+    ```
+  </Tab>
+<Tab value="Windows PowerShell">
+    ```powershell
+    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group normalization-service
+    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group clustering-service
+    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group incident-service
+    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group notification-service
+    ```
+  </Tab>
+<Tab value="Windows CMD">
+    ```cmd
+    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group normalization-service
+    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group clustering-service
+    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group incident-service
+    docker exec -it log0-kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group notification-service
     ```
   </Tab>
 </Tabs>
@@ -654,19 +723,19 @@ PostgreSQL is exposed on port **5433** (the container runs on 5432 internally; D
 
 ### Connect to the database
 
-<Tabs items={["Windows CMD", "Windows PowerShell", "Linux/macOS"]}>
-  <Tab value="Windows CMD">
-    ```cmd
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
+  <Tab value="Linux/macOS">
+    ```bash
     docker exec -it log0-postgres psql -U log0 -d log0
     ```
   </Tab>
-  <Tab value="Windows PowerShell">
+<Tab value="Windows PowerShell">
     ```powershell
     docker exec -it log0-postgres psql -U log0 -d log0
     ```
   </Tab>
-  <Tab value="Linux/macOS">
-    ```bash
+<Tab value="Windows CMD">
+    ```cmd
     docker exec -it log0-postgres psql -U log0 -d log0
     ```
   </Tab>
