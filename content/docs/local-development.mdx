@@ -473,7 +473,7 @@ Every endpoint should return `{"status":"UP"}`.
 | Service | Port | Role |
 |---|---|---|
 | ingestion-gateway | 8080 | Receives logs from clients |
-| normalization-service | — (Kafka only) | Parses and fingerprints logs |
+| normalization-service | - (Kafka only) | Parses and fingerprints logs |
 | clustering-service | 8082 | Counts occurrences, triggers incidents |
 | incident-service | 8083 | Stores incidents, exposes REST API |
 | notification-service | 8084 | Sends Slack alerts |

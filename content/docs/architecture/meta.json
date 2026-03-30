@@ -5,6 +5,7 @@
     "high-level-system-architecture",
     "flow-diagrams",
     "lld-uml",
+    "async-api",
     "decisions"
   ]
 }

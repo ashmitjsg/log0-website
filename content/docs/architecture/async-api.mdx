@@ -1,0 +1,238 @@
+---
+title: Kafka Event Contracts (AsyncAPI)
+description: AsyncAPI specification for all Kafka topics in the log0 pipeline - raw-logs, normalized-logs, incident-events, notification-events, and raw-logs-dlq. Every message schema, producer, and consumer documented in one place.
+---
+
+## What This Page Covers
+
+log0's pipeline is entirely event-driven. Every stage communicates by publishing and consuming Kafka messages - there are no direct service-to-service HTTP calls in the core pipeline.
+
+This page documents the **contracts** for all five Kafka topics: what flows through each topic, who produces it, who consumes it, and the exact schema of every message.
+
+The contracts are maintained as an [AsyncAPI](https://www.asyncapi.com/) specification - the event-driven equivalent of OpenAPI/Swagger - in `docs/asyncapi/asyncapi.yaml` in the `log0-platform` repository.
+
+---
+
+## Interactive Docs
+
+The full AsyncAPI spec renders as an interactive docs page. Open it to browse all topics, expand message schemas, and see field-level descriptions and examples:
+
+<Cards>
+  <Card
+    title="Open AsyncAPI Docs →"
+    href="/asyncapi/index.html"
+    description="Interactive browser for all Kafka topic contracts - schemas, producers, consumers, and examples."
+    target="_blank"
+    rel="noopener noreferrer"
+  />
+</Cards>
+
+---
+
+## Pipeline Overview
+
+```
+ingestion-gateway
+      │  publishes
+      ▼
+  raw-logs ──────────────────────────────────────────┐
+      │  consumed by                                  │ on failure
+      ▼                                               ▼
+normalization-service                           raw-logs-dlq
+      │  publishes
+      ▼
+  normalized-logs
+      │  consumed by
+      ▼
+clustering-service
+      │  publishes (when threshold crossed)
+      ▼
+  incident-events
+      │  consumed by
+      ▼
+incident-service
+      │  publishes (on lifecycle transitions)
+      ▼
+  notification-events
+      │  consumed by
+      ▼
+notification-service
+      │  sends
+      ▼
+   Slack
+```
+
+Every service that consumes from Kafka uses **manual offset acknowledgment** - the offset is only committed after the message is successfully processed. On failure, the message is forwarded to `raw-logs-dlq` before the offset is committed, so no event is silently lost.
+
+---
+
+## Topics at a Glance
+
+| Topic | Producer | Consumer | Kafka Key | Message |
+|---|---|---|---|---|
+| `raw-logs` | ingestion-gateway | normalization-service | `tenantId` | `RawLogEvent` |
+| `normalized-logs` | normalization-service | clustering-service | `tenantId` | `NormalizedLogEvent` |
+| `incident-events` | clustering-service | incident-service | `tenantId` | `IncidentEvent` |
+| `notification-events` | incident-service | notification-service | `tenantId` | `NotificationEvent` |
+| `raw-logs-dlq` | all services | *(future DLQ monitor)* | `eventId` | `DlqEvent` |
+
+All topics use `tenantId` as the Kafka partition key - this guarantees that all events for a given tenant land on the same partition and are consumed in order.
+
+---
+
+## Message Schemas (Summary)
+
+### RawLogEvent
+
+Published by **ingestion-gateway** to `raw-logs` after a `POST /api/v1/logs` request passes validation.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `eventId` | UUID | ✅ | Platform-assigned unique ID for this log event |
+| `tenantId` | UUID | ✅ | Tenant that owns this event. Partition key. |
+| `serviceName` | string | ✅ | Application service that generated the log |
+| `environment` | string | ✅ | Deployment environment (production, staging, dev) |
+| `receivedAt` | datetime | ✅ | When the ingestion-gateway received the request |
+| `logTimestamp` | datetime | ⬜ | Timestamp from the original log payload (nullable) |
+| `level` | string | ✅ | Raw log level as sent by the client |
+| `message` | string | ✅ | Log message body (max 10,000 chars) |
+| `trace` | string | ⬜ | Stack trace or trace context (max 100,000 chars) |
+
+---
+
+### NormalizedLogEvent
+
+Published by **normalization-service** to `normalized-logs`. Adds a deterministic SHA-256 fingerprint used for deduplication.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `eventId` | UUID | ✅ | Carried through from RawLogEvent |
+| `tenantId` | UUID | ✅ | Partition key |
+| `serviceName` | string | ✅ | |
+| `environment` | string | ✅ | |
+| `timestamp` | datetime | ✅ | `logTimestamp` if present, else `receivedAt` |
+| `level` | string | ✅ | Normalized (uppercased, defaults to INFO) |
+| `message` | string | ✅ | Trimmed log message |
+| `messageTemplate` | string | ✅ | Dynamic values replaced: UUIDs → `<uuid>`, IPs → `<ip>`, numbers → `<number>` |
+| `fingerprint` | string | ✅ | SHA-256 of `service\|messageTemplate\|exceptionType\|firstStackFrame` |
+| `attributes` | object | ⬜ | Structured attributes (reserved for future enrichment) |
+| `traceId` | string | ⬜ | Distributed trace ID for APM correlation |
+| `schemaVersion` | string | ✅ | Always `"v1"` currently |
+
+---
+
+### IncidentEvent
+
+Published by **clustering-service** to `incident-events` when a fingerprint's occurrence count crosses the configured threshold within a 5-minute tumbling window.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `tenantId` | UUID | ✅ | Partition key |
+| `fingerprint` | string | ✅ | SHA-256 fingerprint - deduplication key in incident-service |
+| `serviceName` | string | ✅ | |
+| `environment` | string | ✅ | |
+| `severity` | enum | ✅ | `HIGH` (ERROR/FATAL), `MEDIUM` (WARN), `LOW` (INFO/DEBUG) |
+| `occurrenceCount` | integer | ✅ | Number of matching events in the current window |
+| `firstSeenAt` | datetime | ✅ | First event in the window |
+| `lastSeenAt` | datetime | ✅ | Most recent event in the window |
+| `topMessages` | string[] | ✅ | Up to 10 distinct messages (used as AI prompt context) |
+
+---
+
+### NotificationEvent
+
+Published by **incident-service** to `notification-events` on incident lifecycle transitions. Consumed by notification-service to send Slack alerts.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `tenantId` | UUID | ✅ | Partition key |
+| `incidentId` | UUID | ✅ | PostgreSQL ID of the incident |
+| `fingerprint` | string | ✅ | |
+| `serviceName` | string | ✅ | |
+| `environment` | string | ✅ | |
+| `severity` | enum | ✅ | `HIGH`, `MEDIUM`, `LOW` |
+| `status` | enum | ✅ | `NEW`, `ASSIGNED`, `ACKNOWLEDGED`, `RESOLVED` |
+| `occurrenceCount` | integer | ✅ | |
+| `firstSeenAt` | datetime | ✅ | |
+| `lastSeenAt` | datetime | ✅ | |
+| `topMessages` | string[] | ✅ | |
+| `aiSummary` | string | ⬜ | AI-generated summary. Null on `INCIDENT_CREATED` (async). |
+| `notificationType` | enum | ✅ | `INCIDENT_CREATED`, `INCIDENT_ASSIGNED`, `INCIDENT_RESOLVED` |
+| `assignedToUserId` | UUID | ⬜ | Set only when `notificationType` is `INCIDENT_ASSIGNED` |
+
+---
+
+### DlqEvent
+
+Published to `raw-logs-dlq` by any service that catches a processing failure. Preserves the original event with error context.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `originalEvent` | object | ✅ | The failed event payload (type varies by publisher) |
+| `errorMessage` | string | ✅ | Exception message or cause |
+| `failedAt` | string | ✅ | Name of the service that caught the error |
+| `failedAtTs` | datetime | ✅ | When the failure occurred |
+
+`failedAt` values: `ingestion-gateway`, `normalization-service`, `clustering-service`, `incident-service`, `notification-service`
+
+---
+
+## Keeping the Spec Up to Date
+
+The source file lives at `docs/asyncapi/asyncapi.yaml` in the `log0-platform` repository.
+
+When a Kafka event class changes, update `asyncapi.yaml` in the same PR. Then regenerate the HTML docs.
+
+### Step 1 - Install the AsyncAPI CLI (once)
+
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
+  <Tab value="Linux/macOS">
+    ```bash
+    npm install -g @asyncapi/cli
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    npm install -g @asyncapi/cli
+    ```
+  </Tab>
+  <Tab value="Windows CMD">
+    ```cmd
+    npm install -g @asyncapi/cli
+    ```
+  </Tab>
+</Tabs>
+
+### Step 2 - Regenerate the HTML docs
+
+Run this from the root of the `log0-platform` repository:
+
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
+  <Tab value="Linux/macOS">
+    ```bash
+    asyncapi generate fromTemplate docs/asyncapi/asyncapi.yaml \
+      @asyncapi/html-template \
+      -o <path-to-log0-website>/public/asyncapi \
+      --force-write
+    ```
+  </Tab>
+  <Tab value="Windows PowerShell">
+    ```powershell
+    asyncapi generate fromTemplate docs/asyncapi/asyncapi.yaml `
+      @asyncapi/html-template `
+      -o <path-to-log0-website>\public\asyncapi `
+      --force-write
+    ```
+  </Tab>
+  <Tab value="Windows CMD">
+    ```cmd
+    asyncapi generate fromTemplate docs/asyncapi/asyncapi.yaml @asyncapi/html-template -o <path-to-log0-website>\public\asyncapi --force-write
+    ```
+  </Tab>
+</Tabs>
+
+Replace `<path-to-log0-website>` with the absolute path to your local `log0-website` clone.
+
+### Step 3 - Commit the output
+
+Commit the regenerated files in `log0-website/public/asyncapi/` as a follow-up to the spec change PR.
