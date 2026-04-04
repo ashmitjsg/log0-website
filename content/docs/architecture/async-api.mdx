@@ -9,7 +9,7 @@ log0's pipeline is entirely event-driven. Every stage communicates by publishing
 
 This page documents the **contracts** for all five Kafka topics: what flows through each topic, who produces it, who consumes it, and the exact schema of every message.
 
-The contracts are maintained as an [AsyncAPI](https://www.asyncapi.com/) specification - the event-driven equivalent of OpenAPI/Swagger - in `docs/asyncapi/asyncapi.yaml` in the `log0-platform` repository.
+The contracts are maintained as an [AsyncAPI](https://www.asyncapi.com/) specification - the event-driven equivalent of OpenAPI/Swagger - in `docs/asyncapi/asyncapi.yaml` in the `log0-services` repository.
 
 ---
 
@@ -179,7 +179,7 @@ Published to `raw-logs-dlq` by any service that catches a processing failure. Pr
 
 ## Keeping the Spec Up to Date
 
-The source file lives at `docs/asyncapi/asyncapi.yaml` in the `log0-platform` repository.
+The source file lives at `docs/asyncapi/asyncapi.yaml` in the `log0-services` repository.
 
 When a Kafka event class changes, update `asyncapi.yaml` in the same PR. Then regenerate the HTML docs.
 
@@ -205,7 +205,7 @@ When a Kafka event class changes, update `asyncapi.yaml` in the same PR. Then re
 
 ### Step 2 - Regenerate the HTML docs
 
-Run this from the root of the `log0-platform` repository:
+Run this from the root of the `log0-services` repository:
 
 <Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
   <Tab value="Linux/macOS">
