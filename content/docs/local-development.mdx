@@ -19,30 +19,30 @@ Make sure these are installed before you begin:
 
 ## Step 1 - Start Infrastructure
 
-Start Kafka, Zookeeper, and PostgreSQL via Docker Compose. This also auto-creates all required Kafka topics.
+Start Kafka, Zookeeper, PostgreSQL, and ClickHouse via Docker Compose. This also auto-creates all required Kafka topics.
 
 <Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
   <Tab value="Linux/macOS">
     ```bash
-    cd docker/kafka
+    cd docker
     docker-compose up -d
     ```
   </Tab>
 <Tab value="Windows PowerShell">
     ```powershell
-    cd docker\kafka
+    cd docker
     docker-compose up -d
     ```
   </Tab>
 <Tab value="Windows CMD">
     ```cmd
-    cd docker\kafka
+    cd docker
     docker-compose up -d
     ```
   </Tab>
 </Tabs>
 
-Verify all three containers are running:
+Verify all containers are running:
 
 <Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
   <Tab value="Linux/macOS">
@@ -62,7 +62,30 @@ Verify all three containers are running:
   </Tab>
 </Tabs>
 
-You should see `log0-kafka`, `log0-zookeeper`, and `log0-postgres` in the output. The `log0-kafka-setup` container will run once to create topics and exit - that's expected.
+You should see `log0-kafka`, `log0-zookeeper`, `log0-postgres`, and `log0-clickhouse` in the output. The `log0-kafka-setup` container will run once to create topics and exit - that's expected.
+
+**Verify ClickHouse is up:**
+
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
+  <Tab value="Linux/macOS">
+    ```bash
+    curl http://localhost:8123/ping
+    # Expected: Ok.
+    ```
+  </Tab>
+<Tab value="Windows PowerShell">
+    ```powershell
+    Invoke-RestMethod http://localhost:8123/ping
+    # Expected: Ok.
+    ```
+  </Tab>
+<Tab value="Windows CMD">
+    ```cmd
+    curl http://localhost:8123/ping
+    REM Expected: Ok.
+    ```
+  </Tab>
+</Tabs>
 
 ---
 
@@ -468,17 +491,26 @@ Once all services have printed `Started ... in ... seconds`, verify they are all
 
 Every endpoint should return `{"status":"UP"}`.
 
-> **Note:** normalization-service is Kafka-only and does not expose an HTTP port - it has no actuator endpoint to check.
+> **Note:** normalization-service runs on port 8081 but its actuator is not configured by default. If `http://localhost:8081/actuator/health` returns a connection error, the service is still healthy as long as it's consuming from `raw-logs` (visible in the terminal logs).
 
 | Service | Port | Role |
 |---|---|---|
 | ingestion-gateway | 8080 | Receives logs from clients |
-| normalization-service | - (Kafka only) | Parses and fingerprints logs |
+| normalization-service | 8081 | Parses, fingerprints, and stores logs to ClickHouse |
 | clustering-service | 8082 | Counts occurrences, triggers incidents |
-| incident-service | 8083 | Stores incidents, exposes REST API |
+| incident-service | 8083 | Stores incidents, exposes REST API (incl. log query) |
 | notification-service | 8084 | Sends Slack alerts |
 | ai-service | 8085 | Generates AI summaries via LLM |
 | auth-service | 8086 | Tenant registration, JWT auth, API key management |
+
+**Infrastructure:**
+
+| Container | Port | Role |
+|---|---|---|
+| log0-kafka | 9092 | Event streaming |
+| log0-zookeeper | 2181 | Kafka coordination |
+| log0-postgres | 5433 | Incident & tenant data |
+| log0-clickhouse | 8123 (HTTP), 9000 (native) | Log event storage |
 
 ---
 
@@ -811,22 +843,110 @@ GROUP BY tenant_id;
 
 ---
 
+## Step 8 - Inspect ClickHouse
+
+ClickHouse stores every normalized log event and is queried by the incident-service to return the raw logs behind each incident. It runs on HTTP port **8123**.
+
+### Query log events
+
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
+  <Tab value="Linux/macOS">
+    ```bash
+    # All log events (newest first)
+    curl -s "http://localhost:8123/?user=log0&password=log0" \
+      --data "SELECT event_id, tenant_id, level, message, fingerprint, timestamp FROM log0.log_events ORDER BY timestamp DESC LIMIT 10"
+
+    # Count by fingerprint (shows which errors repeat most)
+    curl -s "http://localhost:8123/?user=log0&password=log0" \
+      --data "SELECT fingerprint, level, count() as hits FROM log0.log_events GROUP BY fingerprint, level ORDER BY hits DESC"
+
+    # Logs for a specific incident fingerprint
+    curl -s "http://localhost:8123/?user=log0&password=log0" \
+      --data "SELECT event_id, message, timestamp FROM log0.log_events WHERE fingerprint = '<your-fingerprint>' ORDER BY timestamp DESC LIMIT 20"
+    ```
+  </Tab>
+<Tab value="Windows PowerShell">
+    ```powershell
+    # All log events (newest first)
+    Invoke-WebRequest -Uri "http://localhost:8123/?user=log0&password=log0" -Method POST `
+      -Body "SELECT event_id, tenant_id, level, message, fingerprint, timestamp FROM log0.log_events ORDER BY timestamp DESC LIMIT 10" `
+      -UseBasicParsing | Select-Object -ExpandProperty Content
+
+    # Count by fingerprint (shows which errors repeat most)
+    Invoke-WebRequest -Uri "http://localhost:8123/?user=log0&password=log0" -Method POST `
+      -Body "SELECT fingerprint, level, count() as hits FROM log0.log_events GROUP BY fingerprint, level ORDER BY hits DESC" `
+      -UseBasicParsing | Select-Object -ExpandProperty Content
+
+    # Logs for a specific incident fingerprint
+    Invoke-WebRequest -Uri "http://localhost:8123/?user=log0&password=log0" -Method POST `
+      -Body "SELECT event_id, message, timestamp FROM log0.log_events WHERE fingerprint = '<your-fingerprint>' ORDER BY timestamp DESC LIMIT 20" `
+      -UseBasicParsing | Select-Object -ExpandProperty Content
+    ```
+  </Tab>
+<Tab value="Windows CMD">
+    ```cmd
+    curl -s "http://localhost:8123/?user=log0&password=log0" --data "SELECT event_id, level, message, fingerprint, timestamp FROM log0.log_events ORDER BY timestamp DESC LIMIT 10"
+    ```
+  </Tab>
+</Tabs>
+
+### Query via incident API
+
+Once you have an incident ID, you can retrieve its raw log events directly through the incident-service REST API:
+
+<Tabs items={["Linux/macOS", "Windows PowerShell", "Windows CMD"]}>
+  <Tab value="Linux/macOS">
+    ```bash
+    curl "http://localhost:8083/api/v1/incidents/<incident-id>/logs?tenantId=<tenant-id>&page=0&size=50"
+    ```
+  </Tab>
+<Tab value="Windows PowerShell">
+    ```powershell
+    Invoke-RestMethod "http://localhost:8083/api/v1/incidents/<incident-id>/logs?tenantId=<tenant-id>&page=0&size=50"
+    ```
+  </Tab>
+<Tab value="Windows CMD">
+    ```cmd
+    curl "http://localhost:8083/api/v1/incidents/<incident-id>/logs?tenantId=<tenant-id>&page=0&size=50"
+    ```
+  </Tab>
+</Tabs>
+
+Returns a JSON array of log events ordered newest-first. Supports `page` (0-based) and `size` (max 200) query params.
+
+### Connect with an external client (DBeaver, DataGrip, TablePlus)
+
+| Setting | Value |
+|---|---|
+| Host | `localhost` |
+| Port | `8123` (HTTP) or `9000` (native TCP) |
+| Database | `log0` |
+| Username | `log0` |
+| Password | `log0` |
+| Driver | ClickHouse |
+
+---
+
 ## Pipeline at a Glance
 
 ```
 POST /api/v1/logs (8080)
   → raw-logs (Kafka)
     → normalization-service (8081)
-      → normalized-logs (Kafka)
-        → clustering-service (8082)
-          → incident-events (Kafka)  ← fires at 10 occurrences
-            → incident-service (8083) → PostgreSQL
-                → POST /api/v1/summaries (8085, async)
-                    → ai-service → Groq LLM
-                        → PATCH /api/v1/incidents/{id}/ai-summary (8083)
-                            → incident.ai_summary saved to PostgreSQL
-              → notification-events (Kafka)
-                → notification-service (8084) → Slack
+      ├── → ClickHouse log_events table (log storage)
+      └── → normalized-logs (Kafka)
+            → clustering-service (8082)
+              → incident-events (Kafka)  ← fires at 10 occurrences
+                → incident-service (8083) → PostgreSQL (incident table)
+                    ├── → POST /api/v1/summaries (8085, async)
+                    │       → ai-service → Groq LLM
+                    │           → PATCH /api/v1/incidents/{id}/ai-summary (8083)
+                    │               → incident.ai_summary saved to PostgreSQL
+                    └── → notification-events (Kafka)
+                              → notification-service (8084) → Slack
+
+GET /api/v1/incidents/{id}/logs (8083)
+  → ClickHouse log_events (query by tenant_id + fingerprint)
 ```
 
 A full end-to-end test (10 logs → Slack message + AI summary) takes about 3–5 seconds under normal load.
